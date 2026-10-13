@@ -1,0 +1,4 @@
+9eeac2185f7a2a08157c9e98760e503f8c37bf1f03547623e080c663327a6004  sub2api-0.2.15-gpt-monitor-ui.tar.gz
+344f0c3a6de9b00eab9b60d0fd18c238577e458f886a1ba4b13f95b38fe7d86e  sub2api-builtin-gpt-monitor.patch
+051c6c29bdb1253f1622c6f877ca23dee2e24c52279c36d3d0861c9db78c922a  sub2api-builtin-gpt-monitor-source.zip
+437240b6449460eeb2a462e0ffe4280376909ba2771284541c151a094711ecfc  内置巡检管理页-安装说明.md

@@ -1,0 +1,7 @@
+Built-in GPT account monitor with native admin page; baseline Sub2API 0.2.15.
+Backend: config, probe, scheduling, management API, Redis lease/CAS, server cleanup tests passed.
+Frontend: native page tests, pending state, sidebar/router/i18n, TypeScript, ESLint, production build passed.
+Docker scripts: 7 mocked-Docker tests passed; no real Docker deployment performed.
+Linux amd64 and arm64: cross-compiled with embedded frontend; not executed on the target server.
+No live GPT account or proxy was contacted. Original business routing and plugin protocol unchanged.
+Build marker: ab80abc-gpt-monitor-ui-v1; version remains 0.2.15.

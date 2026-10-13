@@ -1,0 +1,4267 @@
+diff --git a/backend/cmd/server/wire.go b/backend/cmd/server/wire.go
+index 0667425..0717a32 100644
+--- a/backend/cmd/server/wire.go
++++ b/backend/cmd/server/wire.go
+@@ -130,6 +130,7 @@ func provideCleanup(
+ 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
+ 	promptAudit *securityaudit.PromptService,
+ 	pluginManager *service.PluginManager,
++	gptAccountMonitor *service.GPTAccountMonitorService,
+ ) func() {
+ 	return func() {
+ 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+@@ -142,6 +143,12 @@ func provideCleanup(
+ 
+ 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
+ 		parallelSteps := []cleanupStep{
++			{"GPTAccountMonitorService", func() error {
++				if gptAccountMonitor != nil {
++					gptAccountMonitor.Stop()
++				}
++				return nil
++			}},
+ 			{"PluginManager", func() error {
+ 				if pluginManager != nil {
+ 					pluginManager.Stop()
+diff --git a/backend/cmd/server/wire_gen.go b/backend/cmd/server/wire_gen.go
+index 1eda60d..2f2a894 100644
+--- a/backend/cmd/server/wire_gen.go
++++ b/backend/cmd/server/wire_gen.go
+@@ -290,7 +290,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
+ 	openCodeGoUsageService := service.ProvideOpenCodeGoUsageService(accountRepository, httpUpstream, settingService, leaderLockCache, db)
+ 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
+ 	claudeResetCreditService := service.ProvideClaudeResetCreditService(accountRepository, claudeTokenProvider, proxyRepository, settingService, idempotencyCoordinator, leaderLockCache)
+-	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, grokOAuthHandler, cnProviderHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, pluginHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, promptAdminHandler, paymentHandler, affiliateHandler, complianceHandler, auditLogHandler, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, claudeResetCreditService)
++	gptAccountMonitorStore := repository.NewGPTAccountMonitorStore(redisClient)
++	gptAccountMonitorService := service.ProvideGPTAccountMonitorService(accountRepository, openAIGatewayService, gptAccountMonitorStore, settingRepository, configConfig)
++	gptAccountMonitorHandler := admin.NewGPTAccountMonitorHandler(gptAccountMonitorService)
++	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, grokOAuthHandler, cnProviderHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, pluginHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, promptAdminHandler, paymentHandler, affiliateHandler, complianceHandler, auditLogHandler, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, claudeResetCreditService, gptAccountMonitorHandler)
+ 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
+ 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
+ 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
+@@ -353,7 +356,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
+ 	channelMonitorRunner := service.ProvideChannelMonitorRunner(channelMonitorService, settingService, channelMonitorQuotaFetcher)
+ 	channelMonitorV2Aggregator := service.ProvideChannelMonitorV2Aggregator(channelMonitorV2Repository, db, settingService)
+ 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
+-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager)
++	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, gptAccountMonitorService)
+ 	application := &Application{
+ 		Server:        httpServer,
+ 		PromptAudit:   promptService,
+@@ -439,6 +442,7 @@ func provideCleanup(
+ 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
+ 	promptAudit *securityaudit.PromptService,
+ 	pluginManager *service.PluginManager,
++	gptAccountMonitor *service.GPTAccountMonitorService,
+ ) func() {
+ 	return func() {
+ 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+@@ -450,6 +454,12 @@ func provideCleanup(
+ 		}
+ 
+ 		parallelSteps := []cleanupStep{
++			{"GPTAccountMonitorService", func() error {
++				if gptAccountMonitor != nil {
++					gptAccountMonitor.Stop()
++				}
++				return nil
++			}},
+ 			{"PluginManager", func() error {
+ 				if pluginManager != nil {
+ 					pluginManager.Stop()
+diff --git a/backend/cmd/server/wire_gen_test.go b/backend/cmd/server/wire_gen_test.go
+index d14ca19..223e6e1 100644
+--- a/backend/cmd/server/wire_gen_test.go
++++ b/backend/cmd/server/wire_gen_test.go
+@@ -100,6 +100,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+ 		nil, // openAIAutoReset
+ 		nil, // promptAudit
+ 		nil, // pluginManager
++		nil, // gptAccountMonitor
+ 	)
+ 
+ 	require.NotPanics(t, func() {
+diff --git a/backend/internal/config/config.go b/backend/internal/config/config.go
+index fe0224a..b4fef09 100644
+--- a/backend/internal/config/config.go
++++ b/backend/internal/config/config.go
+@@ -106,6 +106,7 @@ type Config struct {
+ 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+ 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
+ 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
++	GPTAccountMonitor       GPTAccountMonitorConfig       `mapstructure:"gpt_account_monitor"`
+ 
+ 	// Enforce only API-key spending windows in simple mode.
+ 	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
+@@ -116,6 +117,49 @@ type SimpleModeConfig struct {
+ 	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
+ }
+ 
++// GPTAccountMonitorConfig controls the built-in background OAuth account probe.
++// It does not participate in normal request routing.
++type GPTAccountMonitorConfig struct {
++	Enabled            bool    `mapstructure:"enabled" json:"enabled"`
++	IntervalSeconds    int     `mapstructure:"interval_seconds" json:"interval_seconds"`
++	TimeoutSeconds     int     `mapstructure:"timeout_seconds" json:"timeout_seconds"`
++	Concurrency        int     `mapstructure:"concurrency" json:"concurrency"`
++	Model              string  `mapstructure:"model" json:"model"`
++	Prompt             string  `mapstructure:"prompt" json:"prompt"`
++	ExpectedGeneration int     `mapstructure:"expected_generation" json:"expected_generation"`
++	AccountIDs         []int64 `mapstructure:"account_ids" json:"account_ids"`
++	RunOnStart         bool    `mapstructure:"run_on_start" json:"run_on_start"`
++}
++
++const DefaultGPTAccountMonitorPrompt = "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++
++func (c GPTAccountMonitorConfig) Validate() error {
++	if c.IntervalSeconds < 60 || c.IntervalSeconds > 86400 {
++		return fmt.Errorf("gpt_account_monitor.interval_seconds must be between 60 and 86400")
++	}
++	if c.TimeoutSeconds < 10 || c.TimeoutSeconds > 300 {
++		return fmt.Errorf("gpt_account_monitor.timeout_seconds must be between 10 and 300")
++	}
++	if c.Concurrency < 1 || c.Concurrency > 10 {
++		return fmt.Errorf("gpt_account_monitor.concurrency must be between 1 and 10")
++	}
++	if strings.TrimSpace(c.Model) == "" || len(c.Model) > 200 {
++		return fmt.Errorf("gpt_account_monitor.model must contain 1 to 200 bytes")
++	}
++	if strings.TrimSpace(c.Prompt) == "" || len(c.Prompt) > 8192 {
++		return fmt.Errorf("gpt_account_monitor.prompt must contain 1 to 8192 bytes")
++	}
++	if c.ExpectedGeneration < 1 || c.ExpectedGeneration > 99 {
++		return fmt.Errorf("gpt_account_monitor.expected_generation must be between 1 and 99")
++	}
++	for _, id := range c.AccountIDs {
++		if id <= 0 {
++			return fmt.Errorf("gpt_account_monitor.account_ids must contain positive IDs")
++		}
++	}
++	return nil
++}
++
+ // PluginConfig 控制管理员手动上传的本地进程插件。
+ // 默认不包含插件，也不允许安装未签名插件；TrustedPublishers 用于追加第三方发布者。
+ type PluginConfig struct {
+@@ -1881,6 +1925,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
+ 	}
+ 
+ 	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
++	cfg.GPTAccountMonitor.Model = strings.TrimSpace(cfg.GPTAccountMonitor.Model)
++	cfg.GPTAccountMonitor.Prompt = strings.TrimSpace(cfg.GPTAccountMonitor.Prompt)
+ 	cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
+ 	if cfg.Server.Mode == "" {
+ 		cfg.Server.Mode = "debug"
+@@ -2032,6 +2078,16 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
+ }
+ 
+ func setDefaults() {
++	// Register every key so AutomaticEnv also works without a config file.
++	viper.SetDefault("gpt_account_monitor.enabled", false)
++	viper.SetDefault("gpt_account_monitor.interval_seconds", 1800)
++	viper.SetDefault("gpt_account_monitor.timeout_seconds", 90)
++	viper.SetDefault("gpt_account_monitor.concurrency", 3)
++	viper.SetDefault("gpt_account_monitor.model", "gpt-5.4")
++	viper.SetDefault("gpt_account_monitor.prompt", DefaultGPTAccountMonitorPrompt)
++	viper.SetDefault("gpt_account_monitor.expected_generation", 17)
++	viper.SetDefault("gpt_account_monitor.account_ids", []int64{})
++	viper.SetDefault("gpt_account_monitor.run_on_start", true)
+ 	viper.SetDefault("run_mode", RunModeStandard)
+ 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
+ 	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)
+@@ -2703,6 +2759,11 @@ func setEnvReachableDefaults() {
+ }
+ 
+ func (c *Config) Validate() error {
++	if c.GPTAccountMonitor.Enabled {
++		if err := c.GPTAccountMonitor.Validate(); err != nil {
++			return err
++		}
++	}
+ 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
+ 	if err != nil {
+ 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)
+diff --git a/backend/internal/config/gpt_account_monitor_test.go b/backend/internal/config/gpt_account_monitor_test.go
+new file mode 100644
+index 0000000..5014944
+--- /dev/null
++++ b/backend/internal/config/gpt_account_monitor_test.go
+@@ -0,0 +1,108 @@
++package config
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestGPTAccountMonitorDefaults(t *testing.T) {
++	resetViperWithJWTSecret(t)
++	cfg, err := Load()
++	require.NoError(t, err)
++	m := cfg.GPTAccountMonitor
++	require.False(t, m.Enabled)
++	require.Equal(t, 1800, m.IntervalSeconds)
++	require.Equal(t, 90, m.TimeoutSeconds)
++	require.Equal(t, 3, m.Concurrency)
++	require.Equal(t, "gpt-5.4", m.Model)
++	require.Equal(t, DefaultGPTAccountMonitorPrompt, m.Prompt)
++	require.Equal(t, 17, m.ExpectedGeneration)
++	require.Empty(t, m.AccountIDs)
++	require.True(t, m.RunOnStart)
++}
++
++func TestGPTAccountMonitorEnvironmentOverrides(t *testing.T) {
++	resetViperWithJWTSecret(t)
++	for key, value := range map[string]string{
++		"GPT_ACCOUNT_MONITOR_ENABLED":             "true",
++		"GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS":    "600",
++		"GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS":     "45",
++		"GPT_ACCOUNT_MONITOR_CONCURRENCY":         "2",
++		"GPT_ACCOUNT_MONITOR_MODEL":               " custom-model ",
++		"GPT_ACCOUNT_MONITOR_PROMPT":              " custom prompt ",
++		"GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION": "18",
++		"GPT_ACCOUNT_MONITOR_ACCOUNT_IDS":         "12,34",
++		"GPT_ACCOUNT_MONITOR_RUN_ON_START":        "false",
++	} {
++		t.Setenv(key, value)
++	}
++	cfg, err := Load()
++	require.NoError(t, err)
++	require.Equal(t, GPTAccountMonitorConfig{
++		Enabled: true, IntervalSeconds: 600, TimeoutSeconds: 45, Concurrency: 2,
++		Model: "custom-model", Prompt: "custom prompt", ExpectedGeneration: 18,
++		AccountIDs: []int64{12, 34}, RunOnStart: false,
++	}, cfg.GPTAccountMonitor)
++}
++
++func TestGPTAccountMonitorYAML(t *testing.T) {
++	resetViperWithJWTSecret(t)
++	file := filepath.Join(t.TempDir(), "config.yaml")
++	require.NoError(t, os.WriteFile(file, []byte("gpt_account_monitor:\n  enabled: true\n  account_ids: [41, 42]\n  run_on_start: false\n"), 0o600))
++	t.Setenv("CONFIG_FILE", file)
++	cfg, err := Load()
++	require.NoError(t, err)
++	require.True(t, cfg.GPTAccountMonitor.Enabled)
++	require.Equal(t, []int64{41, 42}, cfg.GPTAccountMonitor.AccountIDs)
++	require.False(t, cfg.GPTAccountMonitor.RunOnStart)
++}
++
++func TestGPTAccountMonitorValidation(t *testing.T) {
++	valid := GPTAccountMonitorConfig{
++		Enabled: true, IntervalSeconds: 1800, TimeoutSeconds: 90, Concurrency: 3,
++		Model: "gpt-5.4", Prompt: DefaultGPTAccountMonitorPrompt, ExpectedGeneration: 17,
++	}
++	for _, tc := range []struct {
++		name   string
++		change func(*GPTAccountMonitorConfig)
++	}{
++		{"interval_low", func(c *GPTAccountMonitorConfig) { c.IntervalSeconds = 59 }},
++		{"interval_high", func(c *GPTAccountMonitorConfig) { c.IntervalSeconds = 86401 }},
++		{"timeout_low", func(c *GPTAccountMonitorConfig) { c.TimeoutSeconds = 9 }},
++		{"timeout_high", func(c *GPTAccountMonitorConfig) { c.TimeoutSeconds = 301 }},
++		{"concurrency_low", func(c *GPTAccountMonitorConfig) { c.Concurrency = 0 }},
++		{"concurrency_high", func(c *GPTAccountMonitorConfig) { c.Concurrency = 11 }},
++		{"model_empty", func(c *GPTAccountMonitorConfig) { c.Model = " " }},
++		{"prompt_empty", func(c *GPTAccountMonitorConfig) { c.Prompt = " " }},
++		{"generation_low", func(c *GPTAccountMonitorConfig) { c.ExpectedGeneration = 0 }},
++		{"generation_high", func(c *GPTAccountMonitorConfig) { c.ExpectedGeneration = 100 }},
++		{"account_zero", func(c *GPTAccountMonitorConfig) { c.AccountIDs = []int64{0} }},
++		{"account_negative", func(c *GPTAccountMonitorConfig) { c.AccountIDs = []int64{-1} }},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			cfg := valid
++			tc.change(&cfg)
++			require.ErrorContains(t, cfg.Validate(), "gpt_account_monitor.")
++			cfg.Enabled = false
++			require.Error(t, cfg.Validate(), "disabled settings must still be safe to save from the management page")
++		})
++	}
++	require.NoError(t, valid.Validate())
++	valid.IntervalSeconds, valid.TimeoutSeconds, valid.Concurrency = 60, 10, 1
++	valid.ExpectedGeneration = 1
++	require.NoError(t, valid.Validate())
++	valid.IntervalSeconds, valid.TimeoutSeconds, valid.Concurrency = 86400, 300, 10
++	valid.ExpectedGeneration = 99
++	require.NoError(t, valid.Validate())
++}
++
++func TestGPTAccountMonitorRejectsInvalidEnabledEnvironment(t *testing.T) {
++	resetViperWithJWTSecret(t)
++	t.Setenv("GPT_ACCOUNT_MONITOR_ENABLED", "true")
++	t.Setenv("GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS", "59")
++	_, err := Load()
++	require.ErrorContains(t, err, "gpt_account_monitor.interval_seconds")
++}
+diff --git a/backend/internal/handler/admin/gpt_account_monitor_handler.go b/backend/internal/handler/admin/gpt_account_monitor_handler.go
+new file mode 100644
+index 0000000..4ed9b95
+--- /dev/null
++++ b/backend/internal/handler/admin/gpt_account_monitor_handler.go
+@@ -0,0 +1,140 @@
++package admin
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++)
++
++type gptAccountMonitorService interface {
++	GetConfig(context.Context) (config.GPTAccountMonitorConfig, error)
++	SaveConfig(context.Context, config.GPTAccountMonitorConfig) (config.GPTAccountMonitorConfig, error)
++	Status(context.Context) (service.GPTAccountMonitorStatus, error)
++	RunNow(context.Context) (bool, error)
++}
++
++// GPTAccountMonitorHandler is registered only within the existing admin group.
++type GPTAccountMonitorHandler struct {
++	monitor gptAccountMonitorService
++}
++
++func NewGPTAccountMonitorHandler(monitor *service.GPTAccountMonitorService) *GPTAccountMonitorHandler {
++	h := &GPTAccountMonitorHandler{}
++	if monitor != nil {
++		h.monitor = monitor
++	}
++	return h
++}
++
++func (h *GPTAccountMonitorHandler) ready(c *gin.Context) bool {
++	if h == nil || h.monitor == nil {
++		response.Error(c, http.StatusServiceUnavailable, "账号检查服务暂不可用")
++		return false
++	}
++	return true
++}
++
++func (h *GPTAccountMonitorHandler) GetConfig(c *gin.Context) {
++	if !h.ready(c) {
++		return
++	}
++	cfg, err := h.monitor.GetConfig(c.Request.Context())
++	if err != nil {
++		response.InternalError(c, "读取账号检查配置失败")
++		return
++	}
++	if cfg.AccountIDs == nil {
++		cfg.AccountIDs = []int64{}
++	}
++	response.Success(c, cfg)
++}
++
++// Every field is required because this endpoint replaces the complete settings
++// document. Pointer fields distinguish false/zero values from absent or null.
++type gptAccountMonitorConfigRequest struct {
++	Enabled            *bool    `json:"enabled"`
++	IntervalSeconds    *int     `json:"interval_seconds"`
++	TimeoutSeconds     *int     `json:"timeout_seconds"`
++	Concurrency        *int     `json:"concurrency"`
++	Model              *string  `json:"model"`
++	Prompt             *string  `json:"prompt"`
++	ExpectedGeneration *int     `json:"expected_generation"`
++	AccountIDs         *[]int64 `json:"account_ids"`
++	RunOnStart         *bool    `json:"run_on_start"`
++}
++
++func (h *GPTAccountMonitorHandler) SaveConfig(c *gin.Context) {
++	if !h.ready(c) {
++		return
++	}
++	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 32*1024))
++	decoder.DisallowUnknownFields()
++	var request gptAccountMonitorConfigRequest
++	if err := decoder.Decode(&request); err != nil {
++		response.BadRequest(c, "配置必须是有效 JSON，且不能包含未知字段或超过 32 KB")
++		return
++	}
++	if err := decoder.Decode(&struct{}{}); err != io.EOF {
++		response.BadRequest(c, "配置只能包含一个 JSON 对象")
++		return
++	}
++	if request.Enabled == nil || request.IntervalSeconds == nil || request.TimeoutSeconds == nil || request.Concurrency == nil || request.Model == nil || request.Prompt == nil || request.ExpectedGeneration == nil || request.AccountIDs == nil || request.RunOnStart == nil {
++		response.BadRequest(c, "请提交完整的账号检查配置")
++		return
++	}
++	cfg := config.GPTAccountMonitorConfig{
++		Enabled: *request.Enabled, IntervalSeconds: *request.IntervalSeconds,
++		TimeoutSeconds: *request.TimeoutSeconds, Concurrency: *request.Concurrency,
++		Model: strings.TrimSpace(*request.Model), Prompt: strings.TrimSpace(*request.Prompt),
++		ExpectedGeneration: *request.ExpectedGeneration, AccountIDs: *request.AccountIDs,
++		RunOnStart: *request.RunOnStart,
++	}
++	if err := cfg.Validate(); err != nil {
++		response.BadRequest(c, "配置无效：间隔 60–86400 秒、超时 10–300 秒、并发 1–10、代数 1–99；模型和问题不能为空，账号 ID 必须为正整数")
++		return
++	}
++	saved, err := h.monitor.SaveConfig(c.Request.Context(), cfg)
++	if err != nil {
++		response.InternalError(c, "保存账号检查配置失败")
++		return
++	}
++	if saved.AccountIDs == nil {
++		saved.AccountIDs = []int64{}
++	}
++	response.Success(c, saved)
++}
++
++func (h *GPTAccountMonitorHandler) Status(c *gin.Context) {
++	if !h.ready(c) {
++		return
++	}
++	status, err := h.monitor.Status(c.Request.Context())
++	if err != nil {
++		response.InternalError(c, "读取账号检查状态失败")
++		return
++	}
++	response.Success(c, status)
++}
++
++func (h *GPTAccountMonitorHandler) RunNow(c *gin.Context) {
++	if !h.ready(c) {
++		return
++	}
++	queued, err := h.monitor.RunNow(c.Request.Context())
++	if err != nil {
++		response.Error(c, http.StatusServiceUnavailable, "暂时无法启动检查，请确认配置已启用并稍后重试")
++		return
++	}
++	message := "检查已在运行或已排队"
++	if queued {
++		message = "已提交立即检查任务"
++	}
++	response.Success(c, gin.H{"queued": queued, "message": message})
++}
+diff --git a/backend/internal/handler/admin/gpt_account_monitor_handler_test.go b/backend/internal/handler/admin/gpt_account_monitor_handler_test.go
+new file mode 100644
+index 0000000..922dc5e
+--- /dev/null
++++ b/backend/internal/handler/admin/gpt_account_monitor_handler_test.go
+@@ -0,0 +1,168 @@
++package admin
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++)
++
++type gptMonitorHandlerStub struct {
++	cfg    config.GPTAccountMonitorConfig
++	err    error
++	saves  int
++	runs   int
++	queued bool
++}
++
++func (s *gptMonitorHandlerStub) GetConfig(context.Context) (config.GPTAccountMonitorConfig, error) {
++	return s.cfg, s.err
++}
++func (s *gptMonitorHandlerStub) SaveConfig(_ context.Context, cfg config.GPTAccountMonitorConfig) (config.GPTAccountMonitorConfig, error) {
++	s.saves++
++	s.cfg = cfg
++	return s.cfg, s.err
++}
++func (s *gptMonitorHandlerStub) Status(context.Context) (service.GPTAccountMonitorStatus, error) {
++	return service.GPTAccountMonitorStatus{}, s.err
++}
++func (s *gptMonitorHandlerStub) RunNow(context.Context) (bool, error) {
++	s.runs++
++	return s.queued, s.err
++}
++
++func gptMonitorTestConfig() config.GPTAccountMonitorConfig {
++	return config.GPTAccountMonitorConfig{
++		Enabled: true, IntervalSeconds: 1800, TimeoutSeconds: 90, Concurrency: 3,
++		Model: "gpt-5.4", Prompt: config.DefaultGPTAccountMonitorPrompt,
++		ExpectedGeneration: 17, AccountIDs: []int64{}, RunOnStart: true,
++	}
++}
++
++func gptMonitorTestRouter(h *GPTAccountMonitorHandler) *gin.Engine {
++	router := gin.New()
++	router.GET("/config", h.GetConfig)
++	router.PUT("/config", h.SaveConfig)
++	router.GET("/status", h.Status)
++	router.POST("/run", h.RunNow)
++	return router
++}
++
++func gptMonitorRequest(router *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
++	w := httptest.NewRecorder()
++	r := httptest.NewRequest(method, path, strings.NewReader(body))
++	r.Header.Set("Content-Type", "application/json")
++	router.ServeHTTP(w, r)
++	return w
++}
++
++func TestGPTMonitorHandlerReadConfigUsesSnakeCaseAndArray(t *testing.T) {
++	s := &gptMonitorHandlerStub{cfg: gptMonitorTestConfig()}
++	s.cfg.AccountIDs = nil
++	w := gptMonitorRequest(gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s}), http.MethodGet, "/config", "")
++	require.Equal(t, http.StatusOK, w.Code)
++	var result struct {
++		Code int                        `json:"code"`
++		Data map[string]json.RawMessage `json:"data"`
++	}
++	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
++	require.Zero(t, result.Code)
++	require.JSONEq(t, "[]", string(result.Data["account_ids"]))
++	require.Contains(t, result.Data, "interval_seconds")
++	require.NotContains(t, result.Data, "IntervalSeconds")
++}
++
++func TestGPTMonitorHandlerSaveCompleteDisabledConfig(t *testing.T) {
++	s := &gptMonitorHandlerStub{}
++	cfg := gptMonitorTestConfig()
++	cfg.Enabled, cfg.RunOnStart = false, false
++	cfg.Model, cfg.Prompt = " gpt-5.4 ", " question "
++	cfg.AccountIDs = []int64{12, 34}
++	body, err := json.Marshal(cfg)
++	require.NoError(t, err)
++	w := gptMonitorRequest(gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s}), http.MethodPut, "/config", string(body))
++	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
++	require.Equal(t, 1, s.saves)
++	require.False(t, s.cfg.Enabled)
++	require.False(t, s.cfg.RunOnStart)
++	require.Equal(t, "gpt-5.4", s.cfg.Model)
++	require.Equal(t, "question", s.cfg.Prompt)
++	require.Equal(t, []int64{12, 34}, s.cfg.AccountIDs)
++}
++
++func TestGPTMonitorHandlerRejectsMalformedOrUnsafeConfig(t *testing.T) {
++	body, err := json.Marshal(gptMonitorTestConfig())
++	require.NoError(t, err)
++	valid := string(body)
++	for _, tc := range []struct{ name, body string }{
++		{"empty", ""},
++		{"null", "null"},
++		{"missing", `{"enabled":false}`},
++		{"unknown", strings.TrimSuffix(valid, "}") + `,"unknown":"SECRET"}`},
++		{"trailing", valid + " {}"},
++		{"wrong_type", strings.Replace(valid, `"enabled":true`, `"enabled":"true"`, 1)},
++		{"null_ids", strings.Replace(valid, `"account_ids":[]`, `"account_ids":null`, 1)},
++		{"negative_id", strings.Replace(valid, `"account_ids":[]`, `"account_ids":[-1]`, 1)},
++		{"interval", strings.Replace(valid, `"interval_seconds":1800`, `"interval_seconds":1`, 1)},
++		{"disabled_invalid", strings.Replace(strings.Replace(valid, `"interval_seconds":1800`, `"interval_seconds":1`, 1), `"enabled":true`, `"enabled":false`, 1)},
++		{"oversize", strings.Replace(valid, "gpt-5.4", strings.Repeat("SECRET", 6000), 1)},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			s := &gptMonitorHandlerStub{}
++			w := gptMonitorRequest(gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s}), http.MethodPut, "/config", tc.body)
++			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
++			require.Zero(t, s.saves)
++			require.NotContains(t, w.Body.String(), "SECRET")
++		})
++	}
++}
++
++func TestGPTMonitorHandlerRunAndStatus(t *testing.T) {
++	for _, queued := range []bool{true, false} {
++		s := &gptMonitorHandlerStub{queued: queued}
++		router := gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s})
++		w := gptMonitorRequest(router, http.MethodPost, "/run", "{}")
++		require.Equal(t, http.StatusOK, w.Code)
++		var result struct {
++			Data struct {
++				Queued bool `json:"queued"`
++			} `json:"data"`
++		}
++		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
++		require.Equal(t, queued, result.Data.Queued)
++		require.Equal(t, 1, s.runs)
++		w = gptMonitorRequest(router, http.MethodGet, "/status", "")
++		require.Equal(t, http.StatusOK, w.Code)
++	}
++}
++
++func TestGPTMonitorHandlerErrorsDoNotExposeServiceDetails(t *testing.T) {
++	body, err := json.Marshal(gptMonitorTestConfig())
++	require.NoError(t, err)
++	for _, tc := range []struct {
++		method, path string
++		status       int
++	}{
++		{http.MethodGet, "/config", http.StatusInternalServerError},
++		{http.MethodPut, "/config", http.StatusInternalServerError},
++		{http.MethodGet, "/status", http.StatusInternalServerError},
++		{http.MethodPost, "/run", http.StatusServiceUnavailable},
++	} {
++		t.Run(tc.method+tc.path, func(t *testing.T) {
++			s := &gptMonitorHandlerStub{err: errors.New("SECRET credentials and database details")}
++			w := gptMonitorRequest(gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s}), tc.method, tc.path, string(body))
++			require.Equal(t, tc.status, w.Code)
++			require.NotContains(t, w.Body.String(), "SECRET")
++		})
++	}
++	w := gptMonitorRequest(gptMonitorTestRouter(NewGPTAccountMonitorHandler(nil)), http.MethodGet, "/status", "")
++	require.Equal(t, http.StatusServiceUnavailable, w.Code)
++}
+diff --git a/backend/internal/handler/handler.go b/backend/internal/handler/handler.go
+index f712690..4c1b952 100644
+--- a/backend/internal/handler/handler.go
++++ b/backend/internal/handler/handler.go
+@@ -32,6 +32,7 @@ type AdminHandlers struct {
+ 	ErrorPassthrough       *admin.ErrorPassthroughHandler
+ 	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
+ 	Plugin                 *admin.PluginHandler
++	GPTAccountMonitor      *admin.GPTAccountMonitorHandler
+ 	APIKey                 *admin.AdminAPIKeyHandler
+ 	ScheduledTest          *admin.ScheduledTestHandler
+ 	Channel                *admin.ChannelHandler
+diff --git a/backend/internal/handler/wire.go b/backend/internal/handler/wire.go
+index e87d440..00f7f91 100644
+--- a/backend/internal/handler/wire.go
++++ b/backend/internal/handler/wire.go
+@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
+ 	ollamaCloudUsage *service.OllamaCloudUsageService,
+ 	opencodeGoUsage *service.OpenCodeGoUsageService,
+ 	claudeResetCredits *service.ClaudeResetCreditService,
++	gptAccountMonitorHandler *admin.GPTAccountMonitorHandler,
+ ) *AdminHandlers {
+ 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
+ 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
+@@ -82,6 +83,7 @@ func ProvideAdminHandlers(
+ 		ErrorPassthrough:       errorPassthroughHandler,
+ 		TLSFingerprintProfile:  tlsFingerprintProfileHandler,
+ 		Plugin:                 pluginHandler,
++		GPTAccountMonitor:      gptAccountMonitorHandler,
+ 		APIKey:                 apiKeyHandler,
+ 		ScheduledTest:          scheduledTestHandler,
+ 		Channel:                channelHandler,
+@@ -279,6 +281,7 @@ var ProviderSet = wire.NewSet(
+ 	admin.NewErrorPassthroughHandler,
+ 	admin.NewTLSFingerprintProfileHandler,
+ 	admin.NewPluginHandler,
++	admin.NewGPTAccountMonitorHandler,
+ 	admin.NewAdminAPIKeyHandler,
+ 	admin.NewScheduledTestHandler,
+ 	admin.NewChannelHandler,
+diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
+index 781928a..5b62385 100644
+--- a/backend/internal/repository/account_repo.go
++++ b/backend/internal/repository/account_repo.go
+@@ -2689,6 +2689,57 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
+ 	return nil
+ }
+ 
++// SetGPTMonitorSchedulableIfMatch changes only the scheduling switch while both
++// the account and the proxy still match the snapshot that was actually probed.
++// Administrator edits, expiry, or a changed proxy invalidate the result.
++func (r *accountRepository) SetGPTMonitorSchedulableIfMatch(ctx context.Context, snapshot *service.Account, schedulable bool) (bool, error) {
++	now := time.Now()
++	if snapshot == nil || snapshot.ID <= 0 || snapshot.Platform != service.PlatformOpenAI ||
++		snapshot.Type != service.AccountTypeOAuth || snapshot.Status != service.StatusActive ||
++		snapshot.ParentAccountID != nil || snapshot.ProxyID == nil || snapshot.Proxy == nil ||
++		snapshot.Proxy.ID != *snapshot.ProxyID || snapshot.Proxy.Status != service.StatusActive ||
++		snapshot.Proxy.IsExpired(now) || (snapshot.ExpiresAt != nil && !snapshot.ExpiresAt.After(now)) {
++		return false, nil
++	}
++	proxy := snapshot.Proxy
++	proxyPredicates := []dbpredicate.Proxy{
++		dbproxy.IDEQ(*snapshot.ProxyID), dbproxy.UpdatedAtEQ(proxy.UpdatedAt),
++		dbproxy.ProtocolEQ(proxy.Protocol), dbproxy.HostEQ(proxy.Host), dbproxy.PortEQ(proxy.Port),
++		dbproxy.DeletedAtIsNil(), dbproxy.StatusEQ(service.StatusActive),
++		dbproxy.Or(dbproxy.ExpiresAtIsNil(), dbproxy.ExpiresAtGT(now)),
++	}
++	if proxy.Username == "" {
++		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.UsernameEQ(""), dbproxy.UsernameIsNil()))
++	} else {
++		proxyPredicates = append(proxyPredicates, dbproxy.UsernameEQ(proxy.Username))
++	}
++	if proxy.Password == "" {
++		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.PasswordEQ(""), dbproxy.PasswordIsNil()))
++	} else {
++		proxyPredicates = append(proxyPredicates, dbproxy.PasswordEQ(proxy.Password))
++	}
++	count, err := r.client.Account.Update().Where(
++		dbaccount.IDEQ(snapshot.ID), dbaccount.UpdatedAtEQ(snapshot.UpdatedAt),
++		dbaccount.DeletedAtIsNil(),
++		dbaccount.PlatformEQ(service.PlatformOpenAI), dbaccount.TypeEQ(service.AccountTypeOAuth),
++		dbaccount.StatusEQ(service.StatusActive), dbaccount.ParentAccountIDIsNil(),
++		dbaccount.Or(dbaccount.ExpiresAtIsNil(), dbaccount.ExpiresAtGT(now)),
++		dbaccount.SchedulableEQ(snapshot.Schedulable), dbaccount.ProxyIDEQ(*snapshot.ProxyID),
++		dbaccount.HasProxyWith(proxyPredicates...),
++	).SetSchedulable(schedulable).Save(ctx)
++	if err != nil || count == 0 {
++		return false, err
++	}
++	id := snapshot.ID
++	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
++		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue GPT monitor scheduling change failed: account=%d", id)
++	}
++	// Recovery and suspension both need an immediate cache update. Preserve
++	// propagation even if the probe context is cancelled after the SQL write.
++	r.syncSchedulerAccountSnapshotDetached(ctx, id)
++	return true, nil
++}
++
+ func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
+ 	rows, err := r.sql.QueryContext(ctx, `
+ 		UPDATE accounts
+diff --git a/backend/internal/repository/account_repo_gpt_monitor_test.go b/backend/internal/repository/account_repo_gpt_monitor_test.go
+new file mode 100644
+index 0000000..2216bae
+--- /dev/null
++++ b/backend/internal/repository/account_repo_gpt_monitor_test.go
+@@ -0,0 +1,157 @@
++package repository
++
++import (
++	"context"
++	"errors"
++	"regexp"
++	"strings"
++	"testing"
++	"time"
++
++	"entgo.io/ent/dialect"
++	entsql "entgo.io/ent/dialect/sql"
++	"github.com/DATA-DOG/go-sqlmock"
++	dbent "github.com/Wei-Shaw/sub2api/ent"
++	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func gptMonitorAccountSnapshot() *service.Account {
++	proxyID := int64(9)
++	return &service.Account{
++		ID: 17, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
++		Status: service.StatusActive, UpdatedAt: time.Now(), Schedulable: true, ProxyID: &proxyID,
++		Proxy: &service.Proxy{ID: proxyID, Status: service.StatusActive, UpdatedAt: time.Now(), Protocol: "http", Host: "proxy", Port: 3128, Username: "user", Password: "pass"},
++	}
++}
++
++type gptMonitorCacheRecorder struct {
++	service.SchedulerCache
++	accounts []*service.Account
++}
++
++func (r *gptMonitorCacheRecorder) SetAccount(ctx context.Context, account *service.Account) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	r.accounts = append(r.accounts, account)
++	return nil
++}
++
++func TestGPTMonitorSchedulingCAS(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		rows     int64
++		target   bool
++		username string
++		password string
++	}{
++		{name: "stale snapshot", rows: 0, target: false, username: "user", password: "pass"},
++		{name: "suspend", rows: 1, target: false, username: "user", password: "pass"},
++		{name: "recover", rows: 1, target: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var mutationSQL string
++			matcher := sqlmock.QueryMatcherFunc(func(expected, actual string) error {
++				if expected == "scheduling mutation" {
++					mutationSQL = actual
++					return nil
++				}
++				return sqlmock.QueryMatcherRegexp.Match(expected, actual)
++			})
++			db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(matcher))
++			require.NoError(t, err)
++			t.Cleanup(func() { _ = db.Close() })
++			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
++			t.Cleanup(func() { _ = client.Close() })
++			cache := &gptMonitorCacheRecorder{}
++			repo := newAccountRepositoryWithSQL(client, db, cache)
++			mock.ExpectExec("scheduling mutation").WillReturnResult(sqlmock.NewResult(0, tc.rows))
++			if tc.rows == 1 {
++				mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).WillReturnResult(sqlmock.NewResult(1, 1))
++				mock.ExpectQuery(`SELECT .* FROM "accounts"`).WillReturnRows(
++					sqlmock.NewRows([]string{"id", "platform", "type", "status", "schedulable"}).
++						AddRow(17, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, tc.target))
++				mock.ExpectQuery(`SELECT .* FROM "account_groups"`).WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
++			}
++			snapshot := gptMonitorAccountSnapshot()
++			snapshot.Schedulable = !tc.target
++			snapshot.Proxy.Username, snapshot.Proxy.Password = tc.username, tc.password
++			changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), snapshot, tc.target)
++			require.NoError(t, err)
++			require.Equal(t, tc.rows == 1, changed)
++			require.NoError(t, mock.ExpectationsWereMet())
++			require.Len(t, cache.accounts, int(tc.rows), "both suspension and recovery must update the scheduler cache")
++			if tc.rows == 1 {
++				require.Equal(t, tc.target, cache.accounts[0].Schedulable)
++			}
++			_, where, ok := strings.Cut(mutationSQL, " WHERE ")
++			require.True(t, ok)
++			for _, guard := range []string{"updated_at", "platform", "type", "status", "deleted_at", "parent_account_id", "schedulable", "proxy_id", "proxies", "protocol", "host", "port", "username", "password"} {
++				require.Contains(t, where, guard, "scheduling must compare account and proxy identity")
++			}
++			require.GreaterOrEqual(t, strings.Count(where, "expires_at"), 4, "account and proxy expiry are checked at mutation time")
++			if tc.username == "" {
++				require.Contains(t, where, `"username" IS NULL`)
++				require.Contains(t, where, `"password" IS NULL`)
++			}
++			set, _, _ := strings.Cut(mutationSQL, " WHERE ")
++			for _, untouched := range []string{"status", "credentials", "proxy_id", "rate_limit_reset_at", "temp_unschedulable_until", "overload_until", "error_message"} {
++				require.NotContains(t, set, untouched, "monitor must preserve unrelated account state")
++			}
++		})
++	}
++}
++
++func TestGPTMonitorSchedulingRejectsIneligibleSnapshotWithoutSQL(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		edit func(*service.Account) *service.Account
++	}{
++		{"nil", func(*service.Account) *service.Account { return nil }},
++		{"API Key account", func(a *service.Account) *service.Account { a.Type = service.AccountTypeAPIKey; return a }},
++		{"other platform", func(a *service.Account) *service.Account { a.Platform = service.PlatformAnthropic; return a }},
++		{"inactive", func(a *service.Account) *service.Account { a.Status = "disabled"; return a }},
++		{"shadow", func(a *service.Account) *service.Account { id := int64(1); a.ParentAccountID = &id; return a }},
++		{"missing proxy ID", func(a *service.Account) *service.Account { a.ProxyID = nil; return a }},
++		{"missing proxy", func(a *service.Account) *service.Account { a.Proxy = nil; return a }},
++		{"mismatched proxy", func(a *service.Account) *service.Account { a.Proxy.ID++; return a }},
++		{"inactive proxy", func(a *service.Account) *service.Account { a.Proxy.Status = "disabled"; return a }},
++		{"expired proxy", func(a *service.Account) *service.Account {
++			old := time.Now().Add(-time.Second)
++			a.Proxy.ExpiresAt = &old
++			return a
++		}},
++		{"expired account", func(a *service.Account) *service.Account {
++			old := time.Now().Add(-time.Second)
++			a.ExpiresAt = &old
++			a.AutoPauseOnExpired = false
++			return a
++		}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			// Nil storage intentionally panics on any attempt to touch the database.
++			repo := &accountRepository{}
++			for _, target := range []bool{false, true} {
++				changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), tc.edit(gptMonitorAccountSnapshot()), target)
++				require.NoError(t, err)
++				require.False(t, changed)
++			}
++		})
++	}
++}
++
++func TestGPTMonitorSchedulingDatabaseFailureDoesNotPropagate(t *testing.T) {
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
++	t.Cleanup(func() { _ = client.Close() })
++	repo := newAccountRepositoryWithSQL(client, db, &gptMonitorCacheRecorder{})
++	mock.ExpectExec(`UPDATE "accounts"`).WillReturnError(errors.New("database unavailable"))
++	changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), gptMonitorAccountSnapshot(), false)
++	require.Error(t, err)
++	require.False(t, changed)
++	require.NoError(t, mock.ExpectationsWereMet())
++}
+diff --git a/backend/internal/repository/gpt_account_monitor_store.go b/backend/internal/repository/gpt_account_monitor_store.go
+new file mode 100644
+index 0000000..0f8ef45
+--- /dev/null
++++ b/backend/internal/repository/gpt_account_monitor_store.go
+@@ -0,0 +1,135 @@
++package repository
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/redis/go-redis/v9"
++)
++
++const (
++	gptAccountMonitorKeyPrefix       = "sub2api:gpt-account-monitor:v1"
++	gptAccountMonitorLeaseKey        = gptAccountMonitorKeyPrefix + ":lease"
++	gptAccountMonitorNextRunTTL      = 7 * 24 * time.Hour
++	gptAccountMonitorMinimumLeaseTTL = 5 * time.Second
++)
++
++var gptAccountMonitorRenewScript = redis.NewScript(`
++if redis.call("GET", KEYS[1]) == ARGV[1] and redis.call("PTTL", KEYS[1]) > 0 then
++  return redis.call("PEXPIRE", KEYS[1], ARGV[2])
++end
++return 0
++`)
++
++var gptAccountMonitorReleaseScript = redis.NewScript(`
++if redis.call("GET", KEYS[1]) == ARGV[1] then
++  return redis.call("DEL", KEYS[1])
++end
++return 0
++`)
++
++// Read the owner and remaining lifetime atomically. A lease with no expiry is
++// invalid; a lease near expiry does not authorize a scheduling change.
++var gptAccountMonitorOwnsScript = redis.NewScript(`
++if redis.call("GET", KEYS[1]) == ARGV[1] and redis.call("PTTL", KEYS[1]) > tonumber(ARGV[2]) then
++  return 1
++end
++return 0
++`)
++
++type gptAccountMonitorStore struct {
++	rdb *redis.Client
++}
++
++func NewGPTAccountMonitorStore(redisClient *redis.Client) service.GPTAccountMonitorStore {
++	return &gptAccountMonitorStore{rdb: redisClient}
++}
++
++func (s *gptAccountMonitorStore) checkOwner(owner string) error {
++	if s == nil || s.rdb == nil {
++		return errors.New("GPT account monitor Redis is unavailable")
++	}
++	if strings.TrimSpace(owner) == "" {
++		return errors.New("GPT account monitor lease owner is empty")
++	}
++	return nil
++}
++
++func (s *gptAccountMonitorStore) Acquire(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
++	if err := s.checkOwner(owner); err != nil {
++		return false, err
++	}
++	if ttl <= gptAccountMonitorMinimumLeaseTTL {
++		return false, errors.New("GPT account monitor lease TTL must exceed five seconds")
++	}
++	return s.rdb.SetNX(ctx, gptAccountMonitorLeaseKey, owner, ttl).Result()
++}
++
++func (s *gptAccountMonitorStore) Renew(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
++	if err := s.checkOwner(owner); err != nil {
++		return false, err
++	}
++	if ttl <= gptAccountMonitorMinimumLeaseTTL {
++		return false, errors.New("GPT account monitor lease TTL must exceed five seconds")
++	}
++	result, err := gptAccountMonitorRenewScript.Run(ctx, s.rdb, []string{gptAccountMonitorLeaseKey}, owner, ttl.Milliseconds()).Int64()
++	return result == 1, err
++}
++
++func (s *gptAccountMonitorStore) Owns(ctx context.Context, owner string) (bool, error) {
++	if err := s.checkOwner(owner); err != nil {
++		return false, err
++	}
++	result, err := gptAccountMonitorOwnsScript.Run(ctx, s.rdb, []string{gptAccountMonitorLeaseKey}, owner, gptAccountMonitorMinimumLeaseTTL.Milliseconds()).Int64()
++	return result == 1, err
++}
++
++func (s *gptAccountMonitorStore) Release(ctx context.Context, owner string) error {
++	if err := s.checkOwner(owner); err != nil {
++		return err
++	}
++	return gptAccountMonitorReleaseScript.Run(ctx, s.rdb, []string{gptAccountMonitorLeaseKey}, owner).Err()
++}
++
++func (s *gptAccountMonitorStore) nextRunKey(configHash string) (string, error) {
++	if s == nil || s.rdb == nil {
++		return "", errors.New("GPT account monitor Redis is unavailable")
++	}
++	if configHash == "" || len(configHash) > 256 || strings.TrimSpace(configHash) != configHash {
++		return "", errors.New("GPT account monitor configuration hash is invalid")
++	}
++	return gptAccountMonitorKeyPrefix + ":next:" + configHash, nil
++}
++
++func (s *gptAccountMonitorStore) NextRun(ctx context.Context, configHash string) (time.Time, error) {
++	key, err := s.nextRunKey(configHash)
++	if err != nil {
++		return time.Time{}, err
++	}
++	value, err := s.rdb.Get(ctx, key).Int64()
++	if errors.Is(err, redis.Nil) {
++		return time.Time{}, nil
++	}
++	if err != nil {
++		return time.Time{}, fmt.Errorf("read GPT account monitor next run: %w", err)
++	}
++	if value <= 0 {
++		return time.Time{}, errors.New("GPT account monitor next run is invalid")
++	}
++	return time.Unix(value, 0).UTC(), nil
++}
++
++func (s *gptAccountMonitorStore) SetNextRun(ctx context.Context, configHash string, next time.Time) error {
++	key, err := s.nextRunKey(configHash)
++	if err != nil {
++		return err
++	}
++	if next.IsZero() || next.Unix() <= 0 {
++		return errors.New("GPT account monitor next run is invalid")
++	}
++	return s.rdb.Set(ctx, key, next.Unix(), gptAccountMonitorNextRunTTL).Err()
++}
+diff --git a/backend/internal/repository/gpt_account_monitor_store_test.go b/backend/internal/repository/gpt_account_monitor_store_test.go
+new file mode 100644
+index 0000000..c4fe9bb
+--- /dev/null
++++ b/backend/internal/repository/gpt_account_monitor_store_test.go
+@@ -0,0 +1,149 @@
++package repository
++
++import (
++	"context"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/alicebob/miniredis/v2"
++	"github.com/redis/go-redis/v9"
++	"github.com/stretchr/testify/require"
++)
++
++func newGPTMonitorTestStore(t *testing.T) (*gptAccountMonitorStore, *miniredis.Miniredis) {
++	t.Helper()
++	mr := miniredis.RunT(t)
++	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
++	t.Cleanup(func() { _ = rdb.Close() })
++	return NewGPTAccountMonitorStore(rdb).(*gptAccountMonitorStore), mr
++}
++
++func TestGPTMonitorStoreLeaseOwnership(t *testing.T) {
++	s, mr := newGPTMonitorTestStore(t)
++	ctx := context.Background()
++	ok, err := s.Acquire(ctx, "first", time.Minute)
++	require.NoError(t, err)
++	require.True(t, ok)
++	ok, err = s.Acquire(ctx, "second", time.Minute)
++	require.NoError(t, err)
++	require.False(t, ok)
++	ok, err = s.Owns(ctx, "first")
++	require.NoError(t, err)
++	require.True(t, ok)
++	ok, err = s.Owns(ctx, "second")
++	require.NoError(t, err)
++	require.False(t, ok)
++	mr.FastForward(40 * time.Second)
++	ok, err = s.Renew(ctx, "second", time.Minute)
++	require.NoError(t, err)
++	require.False(t, ok)
++	require.Equal(t, 20*time.Second, mr.TTL(gptAccountMonitorLeaseKey))
++	ok, err = s.Renew(ctx, "first", time.Minute)
++	require.NoError(t, err)
++	require.True(t, ok)
++	require.Equal(t, time.Minute, mr.TTL(gptAccountMonitorLeaseKey))
++	require.NoError(t, s.Release(ctx, "second"))
++	require.True(t, mr.Exists(gptAccountMonitorLeaseKey))
++	require.NoError(t, s.Release(ctx, "first"))
++	require.False(t, mr.Exists(gptAccountMonitorLeaseKey))
++}
++
++func TestGPTMonitorStoreLeaseExpiryRejectsLateRenewAndRelease(t *testing.T) {
++	s, mr := newGPTMonitorTestStore(t)
++	ctx := context.Background()
++	ok, err := s.Acquire(ctx, "old", time.Minute)
++	require.NoError(t, err)
++	require.True(t, ok)
++	mr.FastForward(55 * time.Second)
++	ok, err = s.Owns(ctx, "old")
++	require.NoError(t, err)
++	require.False(t, ok, "five seconds remaining is not enough to authorize a scheduling mutation")
++	mr.FastForward(5 * time.Second)
++	ok, err = s.Renew(ctx, "old", time.Minute)
++	require.NoError(t, err)
++	require.False(t, ok, "expired lease must never be recreated by renewal")
++	ok, err = s.Acquire(ctx, "new", time.Minute)
++	require.NoError(t, err)
++	require.True(t, ok)
++	ok, err = s.Renew(ctx, "old", 2*time.Minute)
++	require.NoError(t, err)
++	require.False(t, ok)
++	require.NoError(t, s.Release(ctx, "old"))
++	owner, err := mr.Get(gptAccountMonitorLeaseKey)
++	require.NoError(t, err)
++	require.Equal(t, "new", owner)
++	require.Equal(t, time.Minute, mr.TTL(gptAccountMonitorLeaseKey))
++
++	// A broken non-expiring key does not authorize monitoring or allow renewal.
++	require.NoError(t, mr.Set(gptAccountMonitorLeaseKey, "new"))
++	ok, err = s.Owns(ctx, "new")
++	require.NoError(t, err)
++	require.False(t, ok)
++	ok, err = s.Renew(ctx, "new", time.Minute)
++	require.NoError(t, err)
++	require.False(t, ok)
++}
++
++func TestGPTMonitorStoreNextRunIsConfigurationScopedAndExpires(t *testing.T) {
++	s, mr := newGPTMonitorTestStore(t)
++	ctx := context.Background()
++	next, err := s.NextRun(ctx, "config-a")
++	require.NoError(t, err)
++	require.True(t, next.IsZero())
++	want := time.Date(2026, 10, 13, 10, 30, 0, 0, time.UTC)
++	require.NoError(t, s.SetNextRun(ctx, "config-a", want))
++	next, err = s.NextRun(ctx, "config-a")
++	require.NoError(t, err)
++	require.Equal(t, want, next)
++	next, err = s.NextRun(ctx, "config-b")
++	require.NoError(t, err)
++	require.True(t, next.IsZero())
++	key, err := s.nextRunKey("config-a")
++	require.NoError(t, err)
++	require.Equal(t, 7*24*time.Hour, mr.TTL(key))
++	mr.FastForward(7 * 24 * time.Hour)
++	next, err = s.NextRun(ctx, "config-a")
++	require.NoError(t, err)
++	require.True(t, next.IsZero())
++	for _, corrupt := range []string{"not-a-time", "0", "-1"} {
++		require.NoError(t, mr.Set(key, corrupt))
++		_, err = s.NextRun(ctx, "config-a")
++		require.Error(t, err, "corrupt shared state must fail closed")
++	}
++}
++
++func TestGPTMonitorStoreRejectsInvalidOrUnavailableState(t *testing.T) {
++	s, _ := newGPTMonitorTestStore(t)
++	ctx := context.Background()
++	for _, owner := range []string{"", "  "} {
++		_, err := s.Acquire(ctx, owner, time.Minute)
++		require.Error(t, err)
++		_, err = s.Renew(ctx, owner, time.Minute)
++		require.Error(t, err)
++		_, err = s.Owns(ctx, owner)
++		require.Error(t, err)
++		require.Error(t, s.Release(ctx, owner))
++	}
++	for _, ttl := range []time.Duration{-time.Second, 0, time.Second, 5 * time.Second} {
++		_, err := s.Acquire(ctx, "owner", ttl)
++		require.Error(t, err)
++		_, err = s.Renew(ctx, "owner", ttl)
++		require.Error(t, err)
++	}
++	for _, hash := range []string{"", " hash", strings.Repeat("x", 257)} {
++		_, err := s.NextRun(ctx, hash)
++		require.Error(t, err)
++		require.Error(t, s.SetNextRun(ctx, hash, time.Now()))
++	}
++	require.Error(t, s.SetNextRun(ctx, "valid", time.Time{}))
++	require.NoError(t, s.rdb.Close())
++	ok, err := s.Owns(ctx, "owner")
++	require.Error(t, err)
++	require.False(t, ok)
++	ok, err = s.Acquire(ctx, "owner", time.Minute)
++	require.Error(t, err)
++	require.False(t, ok)
++	_, err = s.NextRun(ctx, "config")
++	require.Error(t, err)
++}
+diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
+index f56fee1..8352ecd 100644
+--- a/backend/internal/repository/wire.go
++++ b/backend/internal/repository/wire.go
+@@ -130,6 +130,7 @@ var ProviderSet = wire.NewSet(
+ 	NewBatchImageQueue,
+ 	NewBatchImageDownloadLimiter,
+ 	NewLeaderLockCache,
++	NewGPTAccountMonitorStore,
+ 	ProvideSchedulerCache,
+ 	NewSchedulerOutboxRepository,
+ 	NewAuthCacheInvalidationOutboxRepository,
+diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
+index 315fc20..511aa43 100644
+--- a/backend/internal/server/routes/admin.go
++++ b/backend/internal/server/routes/admin.go
+@@ -45,6 +45,7 @@ func RegisterAdminRoutes(
+ 
+ 		// 账号管理
+ 		registerAccountRoutes(admin, h, stepUpAuth)
++		registerGPTAccountMonitorRoutes(admin, h)
+ 
+ 		// 公告管理
+ 		registerAnnouncementRoutes(admin, h)
+@@ -759,6 +760,14 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
+ 	}
+ }
+ 
++func registerGPTAccountMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
++	monitor := admin.Group("/gpt-account-monitor")
++	monitor.GET("/config", h.Admin.GPTAccountMonitor.GetConfig)
++	monitor.PUT("/config", h.Admin.GPTAccountMonitor.SaveConfig)
++	monitor.GET("/status", h.Admin.GPTAccountMonitor.Status)
++	monitor.POST("/run", h.Admin.GPTAccountMonitor.RunNow)
++}
++
+ func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+ 	plugins := admin.Group("/plugins")
+ 	{
+diff --git a/backend/internal/service/gpt_account_monitor_management.go b/backend/internal/service/gpt_account_monitor_management.go
+new file mode 100644
+index 0000000..61eb078
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_management.go
+@@ -0,0 +1,206 @@
++package service
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"sort"
++	"strings"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
++)
++
++const SettingKeyGPTAccountMonitorConfig = "gpt_account_monitor_config"
++
++type GPTAccountMonitorStatus struct {
++	Enabled       bool                             `json:"enabled"`
++	Running       bool                             `json:"running"`
++	LastRun       *time.Time                       `json:"last_run"`
++	NextRun       *time.Time                       `json:"next_run"`
++	Message       string                           `json:"message"`
++	TotalAccounts int                              `json:"total_accounts"`
++	Accounts      []GPTAccountMonitorStatusAccount `json:"accounts"`
++}
++type GPTAccountMonitorStatusAccount struct {
++	AccountID int64  `json:"account_id"`
++	Name      string `json:"name"`
++	ProxyName string `json:"proxy_name"`
++	GPTAccountMonitorResult
++}
++
++func cloneGPTMonitorConfig(cfg config.GPTAccountMonitorConfig) config.GPTAccountMonitorConfig {
++	cfg.AccountIDs = append([]int64{}, cfg.AccountIDs...)
++	return cfg
++}
++func gptMonitorConfigHash(cfg config.GPTAccountMonitorConfig) string {
++	cfg = cloneGPTMonitorConfig(cfg)
++	raw, _ := json.Marshal(cfg)
++	sum := sha256.Sum256(raw)
++	return hex.EncodeToString(sum[:])
++}
++
++func (s *GPTAccountMonitorService) GetConfig(ctx context.Context) (config.GPTAccountMonitorConfig, error) {
++	if s.settings == nil {
++		s.mu.Lock()
++		defer s.mu.Unlock()
++		return cloneGPTMonitorConfig(s.cfg), nil
++	}
++	raw, err := s.settings.GetValue(ctx, SettingKeyGPTAccountMonitorConfig)
++	if errors.Is(err, ErrSettingNotFound) {
++		return cloneGPTMonitorConfig(s.defaults), nil
++	}
++	if err != nil {
++		return config.GPTAccountMonitorConfig{}, err
++	}
++	cfg := cloneGPTMonitorConfig(s.defaults)
++	if json.Unmarshal([]byte(raw), &cfg) != nil {
++		return cfg, errors.New("invalid saved GPT account monitor config")
++	}
++	if err := cfg.Validate(); err != nil {
++		return cfg, err
++	}
++	return cloneGPTMonitorConfig(cfg), nil
++}
++
++func (s *GPTAccountMonitorService) SaveConfig(ctx context.Context, cfg config.GPTAccountMonitorConfig) (config.GPTAccountMonitorConfig, error) {
++	cfg.Model = strings.TrimSpace(cfg.Model)
++	cfg.Prompt = strings.TrimSpace(cfg.Prompt)
++	if err := cfg.Validate(); err != nil {
++		return cfg, infraerrors.BadRequest("INVALID_MONITOR_CONFIG", err.Error())
++	}
++	if len(cfg.Model) > 200 || strings.ContainsAny(cfg.Model, "\r\n") || len(cfg.Prompt) > 8192 || len(cfg.AccountIDs) > 10000 {
++		return cfg, infraerrors.BadRequest("INVALID_MONITOR_CONFIG", "模型、问题或账号数量超出限制")
++	}
++	cfg = cloneGPTMonitorConfig(cfg)
++	sort.Slice(cfg.AccountIDs, func(i, j int) bool { return cfg.AccountIDs[i] < cfg.AccountIDs[j] })
++	ids := make([]int64, 0, len(cfg.AccountIDs))
++	for _, id := range cfg.AccountIDs {
++		if len(ids) == 0 || ids[len(ids)-1] != id {
++			ids = append(ids, id)
++		}
++	}
++	cfg.AccountIDs = ids
++	if s.settings == nil {
++		return cfg, errors.New("monitor settings repository unavailable")
++	}
++	raw, err := json.Marshal(cfg)
++	if err != nil {
++		return cfg, err
++	}
++	s.managementMu.Lock()
++	defer s.managementMu.Unlock()
++	if err := s.settings.Set(ctx, SettingKeyGPTAccountMonitorConfig, string(raw)); err != nil {
++		return cfg, err
++	}
++	s.mu.Lock()
++	if s.activeCancel != nil {
++		s.activeCancel()
++	}
++	s.cfg = cloneGPTMonitorConfig(cfg)
++	s.state.Enabled = cfg.Enabled
++	if !cfg.Enabled {
++		s.state.Message = "自动巡检已关闭"
++		s.state.NextRun = nil
++		select {
++		case <-s.trigger:
++		default:
++		}
++	}
++	s.mu.Unlock()
++	select {
++	case s.wake <- struct{}{}:
++	default:
++	}
++	return cfg, nil
++}
++
++func (s *GPTAccountMonitorService) RunNow(ctx context.Context) (bool, error) {
++	cfg, err := s.GetConfig(ctx)
++	if err != nil {
++		return false, err
++	}
++	if !cfg.Enabled {
++		return false, infraerrors.BadRequest("GPT_MONITOR_DISABLED", "请先启用并保存巡检配置")
++	}
++	s.mu.Lock()
++	running := s.state.Running
++	available := s.cancel != nil
++	s.mu.Unlock()
++	if !available {
++		return false, errors.New("monitor worker unavailable")
++	}
++	if running {
++		return false, nil
++	}
++	select {
++	case s.trigger <- gptMonitorConfigHash(cfg):
++		s.setMessage("已排队，等待开始巡检")
++		return true, nil
++	default:
++		return false, nil
++	}
++}
++
++func (s *GPTAccountMonitorService) Status(ctx context.Context) (GPTAccountMonitorStatus, error) {
++	cfg, err := s.GetConfig(ctx)
++	if err != nil {
++		return GPTAccountMonitorStatus{}, err
++	}
++	s.mu.Lock()
++	out := s.state
++	s.mu.Unlock()
++	out.Enabled = cfg.Enabled
++	out.Accounts = make([]GPTAccountMonitorStatusAccount, 0)
++	accounts, err := s.repo.ListByPlatform(ctx, PlatformOpenAI)
++	if err != nil {
++		return out, err
++	}
++	selected := map[int64]bool{}
++	for _, id := range cfg.AccountIDs {
++		selected[id] = true
++	}
++	for _, a := range accounts {
++		if !gptMonitorEligible(&a) || (len(selected) > 0 && !selected[a.ID]) {
++			continue
++		}
++		row := GPTAccountMonitorStatusAccount{AccountID: a.ID, Name: a.Name, GPTAccountMonitorResult: GPTAccountMonitorResult{Verdict: "pending", Message: "尚未检查", Schedulable: a.Schedulable}}
++		if a.Proxy != nil {
++			row.ProxyName = a.Proxy.Name
++		}
++		if saved, ok := a.Extra["gpt_account_monitor"]; ok {
++			raw, err := json.Marshal(saved)
++			if err == nil {
++				_ = json.Unmarshal(raw, &row.GPTAccountMonitorResult)
++			}
++		}
++		row.Schedulable = a.Schedulable
++		if out.LastRun == nil || row.CheckedAt.After(*out.LastRun) {
++			t := row.CheckedAt
++			if !t.IsZero() {
++				out.LastRun = &t
++			}
++		}
++		out.Accounts = append(out.Accounts, row)
++	}
++	out.TotalAccounts = len(out.Accounts)
++	sort.Slice(out.Accounts, func(i, j int) bool {
++		if out.Accounts[i].CheckedAt.Equal(out.Accounts[j].CheckedAt) {
++			return out.Accounts[i].AccountID < out.Accounts[j].AccountID
++		}
++		return out.Accounts[i].CheckedAt.After(out.Accounts[j].CheckedAt)
++	})
++	if len(out.Accounts) > 200 {
++		out.Accounts = out.Accounts[:200]
++	}
++	if !cfg.Enabled {
++		out.NextRun = nil
++		if !out.Running {
++			out.Message = "自动巡检已关闭"
++		}
++	}
++	return out, nil
++}
+diff --git a/backend/internal/service/gpt_account_monitor_management_test.go b/backend/internal/service/gpt_account_monitor_management_test.go
+new file mode 100644
+index 0000000..da720a0
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_management_test.go
+@@ -0,0 +1,149 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++type gptMonitorSettingsStub struct {
++	SettingRepository
++	mu         sync.Mutex
++	value      string
++	writeError error
++}
++
++func (s *gptMonitorSettingsStub) GetValue(context.Context, string) (string, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.value == "" {
++		return "", ErrSettingNotFound
++	}
++	return s.value, nil
++}
++func (s *gptMonitorSettingsStub) Set(_ context.Context, _ string, value string) error {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.writeError != nil {
++		return s.writeError
++	}
++	s.value = value
++	return nil
++}
++func TestGPTAccountMonitorManagementPersistsAndCancelsAfterSave(t *testing.T) {
++	s, _, _ := gptMonitorFixture()
++	settings := &gptMonitorSettingsStub{}
++	s.settings = settings
++	s.defaults = s.cfg
++	ctx, cancel := context.WithCancel(context.Background())
++	s.activeCancel = cancel
++	cfg := s.cfg
++	cfg.Enabled = false
++	cfg.AccountIDs = []int64{7, 2, 7}
++	settings.writeError = errors.New("database unavailable")
++	_, err := s.SaveConfig(context.Background(), cfg)
++	require.Error(t, err)
++	require.NoError(t, ctx.Err())
++	require.True(t, s.cfg.Enabled)
++	settings.writeError = nil
++	saved, err := s.SaveConfig(context.Background(), cfg)
++	require.NoError(t, err)
++	require.Equal(t, []int64{2, 7}, saved.AccountIDs)
++	require.ErrorIs(t, ctx.Err(), context.Canceled)
++	loaded, err := s.GetConfig(context.Background())
++	require.NoError(t, err)
++	require.False(t, loaded.Enabled)
++	require.Equal(t, saved, loaded)
++	_, err = s.RunNow(context.Background())
++	require.Error(t, err, "disabled job cannot run manually")
++	cfg.Enabled = true
++	cfg.TimeoutSeconds = 0
++	_, err = s.SaveConfig(context.Background(), cfg)
++	require.Error(t, err)
++	require.False(t, s.cfg.Enabled)
++}
++
++func TestGPTAccountMonitorDisablingClearsQueuedManualScan(t *testing.T) {
++	s, _, _ := gptMonitorFixture()
++	s.settings = &gptMonitorSettingsStub{}
++	s.defaults = s.cfg
++	s.cancel = func() {}
++	queued, err := s.RunNow(context.Background())
++	require.NoError(t, err)
++	require.True(t, queued)
++	require.Len(t, s.trigger, 1)
++	cfg := s.cfg
++	cfg.Enabled = false
++	_, err = s.SaveConfig(context.Background(), cfg)
++	require.NoError(t, err)
++	require.Empty(t, s.trigger)
++	cfg.Enabled = true
++	cfg.RunOnStart = false
++	_, err = s.SaveConfig(context.Background(), cfg)
++	require.NoError(t, err)
++	require.Empty(t, s.trigger)
++}
++func TestGPTAccountMonitorManagementStatusIsReadOnlyAndExcludesAPIKeys(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	r.accounts[2].Type = AccountTypeAPIKey
++	r.accounts[0].Extra = map[string]any{"gpt_account_monitor": GPTAccountMonitorResult{CheckedAt: time.Now(), Verdict: "abnormal", Answer: "iPhone16", Message: "已关闭调度"}}
++	s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++		t.Error("GET status triggered probe")
++		return nil, "", nil
++	}
++	status, err := s.Status(context.Background())
++	require.NoError(t, err)
++	require.Equal(t, 5, status.TotalAccounts)
++	require.EqualValues(t, 1, status.Accounts[0].AccountID)
++	require.Equal(t, "iPhone16", status.Accounts[0].Answer)
++	require.Empty(t, r.writes)
++	for _, a := range status.Accounts {
++		require.NotEqualValues(t, 3, a.AccountID)
++	}
++}
++func TestGPTAccountMonitorDisabledByOtherReplicaCannotApplyOldResult(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	settings := &gptMonitorSettingsStub{}
++	s.settings = settings
++	s.defaults = s.cfg
++	s.cfg.AccountIDs = []int64{2}
++	s.defaults = s.cfg
++	s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++		cfg := s.cfg
++		cfg.Enabled = false
++		raw, _ := json.Marshal(cfg)
++		require.NoError(t, settings.Set(context.Background(), SettingKeyGPTAccountMonitorConfig, string(raw)))
++		return &r.accounts[1], "iPhone17", nil
++	}
++	s.runCycle(context.Background())
++	require.Empty(t, r.writes)
++}
++func TestGPTAccountMonitorPageCanEnableInitiallyDisabledWorker(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	s.cfg.Enabled = false
++	s.cfg.RunOnStart = true
++	s.cfg.AccountIDs = []int64{2}
++	s.defaults = s.cfg
++	s.settings = &gptMonitorSettingsStub{}
++	started := make(chan struct{}, 1)
++	s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++		started <- struct{}{}
++		return &r.accounts[1], "iPhone17", nil
++	}
++	cfg := s.cfg
++	cfg.Enabled = true
++	s.Start()
++	defer s.Stop()
++	_, err := s.SaveConfig(context.Background(), cfg)
++	require.NoError(t, err)
++	select {
++	case <-started:
++	case <-time.After(4 * time.Second):
++		t.Fatal("saving enabled config did not wake worker")
++	}
++}
+diff --git a/backend/internal/service/gpt_account_monitor_probe.go b/backend/internal/service/gpt_account_monitor_probe.go
+new file mode 100644
+index 0000000..f9ae959
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_probe.go
+@@ -0,0 +1,321 @@
++package service
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/url"
++	"regexp"
++	"strings"
++	"time"
++	"unicode"
++)
++
++// This private context value is honored only by monitor-initiated token refresh.
++// Pin the full proxy identity so refresh cannot silently change egress or go direct.
++type gptMonitorProxyContextKey struct{}
++type gptMonitorPinnedProxy struct {
++	ID        int64
++	URL       string
++	UpdatedAt time.Time
++}
++
++func validateGPTMonitorProxy(proxy *Proxy) error {
++	if proxy == nil || !proxy.IsActive() || proxy.IsExpired(time.Now()) || strings.TrimSpace(proxy.Host) == "" || proxy.Port < 1 || proxy.Port > 65535 {
++		return errors.New("账号必须绑定启用且未过期的代理")
++	}
++	if _, err := validGPTMonitorProxyURL(proxy.URL()); err != nil {
++		return err
++	}
++	return nil
++}
++
++func validateGPTMonitorAccount(account *Account) error {
++	if account == nil || !account.IsActive() || !account.IsOpenAIOAuth() || account.IsShadow() || account.IsOpenAIAgentIdentity() {
++		return errors.New("检测仅支持启用的独立 OpenAI OAuth 账号")
++	}
++	if account.ExpiresAt != nil && !account.ExpiresAt.After(time.Now()) {
++		return errors.New("账号已过期（不改变调度）")
++	}
++	if account.ProxyID == nil || account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
++		return errors.New("账号未绑定有效代理（不改变调度）")
++	}
++	return validateGPTMonitorProxy(account.Proxy)
++}
++
++// ProbeGPTAccount uses the account's own OAuth credentials and pinned proxy.
++// The returned snapshot was reread after token refresh and is suitable for the
++// caller's conditional scheduling update. Errors never count as a bad answer.
++func (s *OpenAIGatewayService) ProbeGPTAccount(ctx context.Context, accountID int64, model, prompt string) (*Account, string, error) {
++	if s == nil || s.accountRepo == nil || accountID <= 0 {
++		return nil, "", errors.New("账号检测服务不可用")
++	}
++	if strings.TrimSpace(model) == "" || strings.TrimSpace(prompt) == "" || len(model) > 200 || len(prompt) > 8192 {
++		return nil, "", errors.New("检测模型或问题无效")
++	}
++	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
++	defer cancel()
++	account, token, err := s.resolveGPTMonitorIdentity(ctx, accountID)
++	if err != nil {
++		return nil, "", err
++	}
++	client, transport, err := newGPTMonitorClient(account.Proxy.URL())
++	if err != nil {
++		return account, "", err
++	}
++	defer transport.CloseIdleConnections()
++	answer, err := gptMonitorProbeWithClient(ctx, client, account, token, model, prompt)
++	return account, answer, err
++}
++
++func (s *OpenAIGatewayService) resolveGPTMonitorIdentity(ctx context.Context, accountID int64) (*Account, string, error) {
++	account, err := s.accountRepo.GetByID(ctx, accountID)
++	if err != nil {
++		return nil, "", errors.New("读取账号失败（不改变调度）")
++	}
++	if err := validateGPTMonitorAccount(account); err != nil {
++		return nil, "", err
++	}
++	if account.ID != accountID {
++		return nil, "", errors.New("账号已变化，请重新检测")
++	}
++	// The regular provider disables irrecoverably expired credentials. A monitor
++	// must leave scheduling alone when token acquisition cannot be completed.
++	if expires := account.GetCredentialAsTime("expires_at"); expires != nil && !expires.After(time.Now()) && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" && !account.IsOpenAIPersonalAccessToken() {
++		return nil, "", errors.New("访问令牌已过期且无法刷新（不改变调度）")
++	}
++	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL(), UpdatedAt: account.Proxy.UpdatedAt}
++	ctx = context.WithValue(ctx, gptMonitorProxyContextKey{}, pinned)
++	token, _, err := s.GetAccessToken(ctx, account)
++	if err != nil || strings.TrimSpace(token) == "" {
++		return nil, "", errors.New("获取账号访问令牌失败（不改变调度）")
++	}
++	account, err = s.accountRepo.GetByID(ctx, accountID)
++	if err != nil {
++		return nil, "", errors.New("重新读取账号失败（不改变调度）")
++	}
++	if err := validateGPTMonitorAccount(account); err != nil {
++		return nil, "", err
++	}
++	if account.ID != accountID || account.Proxy.ID != pinned.ID || account.Proxy.URL() != pinned.URL || !account.Proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
++		return nil, "", errors.New("账号代理已变化，请重新检测")
++	}
++	if token != account.GetOpenAIAccessToken() {
++		return nil, "", errors.New("账号凭据已变化，请重新检测")
++	}
++	return account, token, nil
++}
++
++// GPTAccountAnswerMatches accepts only a short, affirmative model name.
++// Merely mentioning 17 (e.g. "not iPhone 17" or "16; maybe 17") must not pass.
++func GPTAccountAnswerMatches(answer string, generation int) bool {
++	if len(answer) > 512 || generation < 1 || generation > 99 {
++		return false
++	}
++	answer = strings.ToLower(strings.TrimSpace(answer))
++	answer = strings.Map(func(r rune) rune {
++		if r >= '０' && r <= '９' {
++			return r - '０' + '0'
++		}
++		if unicode.IsSpace(r) || strings.ContainsRune("*`_\"'“”‘’。.!！,，:：", r) {
++			return -1
++		}
++		return r
++	}, answer)
++	pattern := fmt.Sprintf(`^(?:(?:我知道的|据我所知)?(?:最新的?|苹果最新的?)?(?:苹果手机|手机|型号)(?:是|为)?|(?:最新的?|苹果最新的?)(?:是|为)?)?(?:苹果(?:公司)?(?:的)?|apple)?(?:iphone|苹果)%d(?:pro(?:max)?|plus|e)?(?:系列)?$`, generation)
++	// Common Chinese short form has no duplicated brand.
++	if answer == fmt.Sprintf("苹果%d", generation) {
++		return true
++	}
++	return regexp.MustCompile(pattern).MatchString(answer)
++}
++
++func validGPTMonitorProxyURL(raw string) (*url.URL, error) {
++	u, err := url.Parse(raw)
++	if err != nil || u.Hostname() == "" || u.Fragment != "" || u.RawQuery != "" || (u.Path != "" && u.Path != "/") {
++		return nil, errors.New("账号代理地址无效")
++	}
++	switch u.Scheme {
++	case "http", "https", "socks5", "socks5h":
++	default:
++		return nil, errors.New("账号代理协议不受支持")
++	}
++	return u, nil
++}
++
++func newGPTMonitorClient(proxyURL string) (*http.Client, *http.Transport, error) {
++	proxy, err := validGPTMonitorProxyURL(proxyURL)
++	if err != nil {
++		return nil, nil, err
++	}
++	// Never inherit HTTP_PROXY / HTTPS_PROXY or silently retry directly.
++	transport := &http.Transport{Proxy: http.ProxyURL(proxy),
++		DialContext:       (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
++		ForceAttemptHTTP2: true, MaxIdleConns: 1, MaxIdleConnsPerHost: 1,
++		IdleConnTimeout: 30 * time.Second, TLSHandshakeTimeout: 15 * time.Second,
++		ResponseHeaderTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second,
++	}
++	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
++	return client, transport, nil
++}
++
++func gptMonitorProbeWithClient(ctx context.Context, client *http.Client, account *Account, token, model, prompt string) (string, error) {
++	payload := map[string]any{
++		"model": normalizeOpenAIModelForUpstream(account, account.GetMappedModel(model)), "instructions": "Answer the user's question from your existing knowledge only. Do not browse, search, call tools, or guess. Respond with only the phone model you know.",
++		"input":  []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}},
++		"stream": true, "store": false, "tools": []any{}, "tool_choice": "none",
++	}
++	body, err := json.Marshal(payload)
++	if err != nil {
++		return "", errors.New("无法构造检测请求")
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexURL, bytes.NewReader(body))
++	if err != nil {
++		return "", errors.New("无法构造检测请求")
++	}
++	setOpenAIChatGPTAccountHeaders(req.Header, account)
++	applyOpenAICodexProbeHeaders(req.Header)
++	if ua := strings.TrimSpace(account.GetOpenAIUserAgent()); ua != "" {
++		req.Header.Set("User-Agent", ua)
++	}
++	enforceCodexIdentityHeadersWithUA(req.Header, account.GetOpenAIUserAgent())
++	account.ApplyHeaderOverrides(req.Header)
++	req.Header.Set("Authorization", "Bearer "+token)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Accept", "text/event-stream")
++	req.Header.Set("OpenAI-Beta", "responses=experimental")
++	resp, err := client.Do(req)
++	if err != nil {
++		return "", errors.New("上游连接失败或超时（不改变调度）")
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return "", fmt.Errorf("上游 HTTP %d（不改变调度）", resp.StatusCode)
++	}
++	return readGPTMonitorResponse(resp.Body)
++}
++
++// Only response.completed with completed status and assistant output_text counts.
++// Deltas, reasoning, tool calls, truncated streams and [DONE] alone cannot pass.
++func readGPTMonitorResponse(body io.Reader) (string, error) {
++	limited := &io.LimitedReader{R: body, N: 2*1024*1024 + 1}
++	reader := bufio.NewScanner(limited)
++	reader.Buffer(make([]byte, 4096), 256*1024)
++	var data []string
++	var delta strings.Builder
++	sawTool := false
++	consume := func() (string, bool, error) {
++		if limited.N <= 0 {
++			return "", false, errors.New("上游响应超过大小限制")
++		}
++		if len(data) == 0 {
++			return "", false, nil
++		}
++		raw := strings.Join(data, "\n")
++		data = nil
++		if raw == "[DONE]" {
++			return "", false, errors.New("响应缺少完整结束事件")
++		}
++		var event struct {
++			Type  string `json:"type"`
++			Delta string `json:"delta"`
++			Item  struct {
++				Type string `json:"type"`
++			} `json:"item"`
++			Response struct {
++				Status string `json:"status"`
++				Output []struct {
++					Type    string `json:"type"`
++					Role    string `json:"role"`
++					Content []struct {
++						Type string `json:"type"`
++						Text string `json:"text"`
++					} `json:"content"`
++				} `json:"output"`
++			} `json:"response"`
++		}
++		if err := json.Unmarshal([]byte(raw), &event); err != nil {
++			return "", false, errors.New("上游返回无效事件")
++		}
++		if isGPTMonitorToolEvent(event.Type) || isGPTMonitorToolEvent(event.Item.Type) || strings.HasSuffix(event.Item.Type, "_call") {
++			sawTool = true
++		}
++		switch event.Type {
++		case "error", "response.failed", "response.incomplete":
++			return "", false, errors.New("上游响应失败或未完成")
++		case "response.output_text.delta":
++			delta.WriteString(event.Delta)
++			if delta.Len() > 32768 {
++				return "", false, errors.New("回答超过长度限制")
++			}
++		case "response.completed":
++			if event.Response.Status != "completed" {
++				return "", false, errors.New("上游响应状态未完成")
++			}
++			var output strings.Builder
++			for _, item := range event.Response.Output {
++				if isGPTMonitorToolEvent(item.Type) || strings.HasSuffix(item.Type, "_call") {
++					sawTool = true
++				}
++				if item.Type != "message" || item.Role != "assistant" {
++					continue
++				}
++				for _, part := range item.Content {
++					if part.Type == "refusal" {
++						return "", false, errors.New("上游拒绝回答")
++					}
++					if part.Type == "output_text" {
++						output.WriteString(part.Text)
++					}
++				}
++			}
++			if sawTool {
++				return "", false, errors.New("检测响应包含工具调用，已忽略")
++			}
++			answer := strings.TrimSpace(output.String())
++			if answer == "" {
++				return "", false, errors.New("上游没有返回最终文本")
++			}
++			if len(answer) > 32768 {
++				return "", false, errors.New("回答超过长度限制")
++			}
++			return answer, true, nil
++		}
++		return "", false, nil
++	}
++	for reader.Scan() {
++		line := strings.TrimSuffix(reader.Text(), "\r")
++		if line == "" {
++			answer, done, err := consume()
++			if err != nil || done {
++				return answer, err
++			}
++			continue
++		}
++		if strings.HasPrefix(line, "data:") {
++			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
++		}
++	}
++	if reader.Err() != nil {
++		return "", errors.New("读取上游响应失败")
++	}
++	if answer, done, err := consume(); err != nil || done {
++		return answer, err
++	}
++	return "", errors.New("上游响应中断，未收到完整回答")
++}
++
++func isGPTMonitorToolEvent(eventType string) bool {
++	for _, kind := range []string{"web_search", "file_search", "function_call", "computer_call", "code_interpreter", "image_generation", "mcp_", "tool_call", "custom_tool"} {
++		if strings.Contains(eventType, kind) {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/backend/internal/service/gpt_account_monitor_probe_test.go b/backend/internal/service/gpt_account_monitor_probe_test.go
+new file mode 100644
+index 0000000..659a43e
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_probe_test.go
+@@ -0,0 +1,384 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"log/slog"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strconv"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++)
++
++func gptMonitorCompleted(answer string) string {
++	b, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": answer}}}}}})
++	return "data: " + string(b) + "\n\n"
++}
++
++func TestGPTMonitorAnswerMatches(t *testing.T) {
++	for _, answer := range []string{"iPhone 17", "苹果17", "**iPhone 17 Pro Max**。", "iPhone １７ Pro", "苹果 iPhone 17 系列", "最新的是 iPhone 17", "最新的苹果手机是 iPhone 17", "iPhone17e"} {
++		if !GPTAccountAnswerMatches(answer, 17) {
++			t.Errorf("valid answer rejected: %q", answer)
++		}
++	}
++	for _, answer := range []string{"", "iPhone 16", "iPhone 18", "iPhone 170", "iPhone 117", "不是 iPhone 17", "我不知道 iPhone 17 是否发布", "iPhone 16，不是 iPhone 17", "可能是 iPhone 17", "iPhone 17 or 18", "iPhone 17?", "iPhone 17还没发布", "不猜测无法确定", "17", "iPhone 17\n我猜的"} {
++		if GPTAccountAnswerMatches(answer, 17) {
++			t.Errorf("invalid answer accepted: %q", answer)
++		}
++	}
++	if !GPTAccountAnswerMatches("iPhone 18 Pro", 18) || GPTAccountAnswerMatches("iPhone17", 18) || GPTAccountAnswerMatches("iPhone0", 0) {
++		t.Fatal("generation validation failed")
++	}
++}
++
++func TestGPTMonitorCompletedResponseOnly(t *testing.T) {
++	for _, input := range []string{gptMonitorCompleted("iPhone 17"), strings.ReplaceAll(gptMonitorCompleted("iPhone 17"), "\n", "\r\n"), strings.TrimSpace(gptMonitorCompleted("iPhone 17"))} {
++		answer, err := readGPTMonitorResponse(strings.NewReader(input))
++		if err != nil || answer != "iPhone 17" {
++			t.Errorf("completed: %q %v", answer, err)
++		}
++	}
++	bad := []string{
++		`data: {"type":"response.output_text.delta","delta":"iPhone17"}` + "\n\n",
++		"data: [DONE]\n\n", `data: {"type":"response.failed"}` + "\n\n",
++		`data: {"type":"response.incomplete"}` + "\n\n", `data: {broken}` + "\n\n",
++		strings.Replace(gptMonitorCompleted("iPhone17"), `"status":"completed"`, `"status":"incomplete"`, 1),
++		`data: {"type":"response.output_item.added","item":{"type":"web_search_call"}}` + "\n\n" + gptMonitorCompleted("iPhone17"),
++		`data: {"type":"response.function_call_arguments.delta","delta":"iPhone17"}` + "\n\n" + gptMonitorCompleted("iPhone17"),
++		`data: {"type":"response.completed","response":{"status":"completed","output":[]}}` + "\n\n",
++		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","text":"iPhone17"}]}]}}` + "\n\n",
++	}
++	for _, input := range bad {
++		if answer, err := readGPTMonitorResponse(strings.NewReader(input)); err == nil {
++			t.Errorf("accepted incomplete/tool response: %q (%q)", input, answer)
++		}
++	}
++	if _, err := readGPTMonitorResponse(strings.NewReader("data: " + strings.Repeat("a", 300000))); err == nil {
++		t.Fatal("oversized event accepted")
++	}
++	if _, err := readGPTMonitorResponse(strings.NewReader(strings.Repeat(": comment padding\n", 140000) + gptMonitorCompleted("iPhone17"))); err == nil {
++		t.Fatal("oversized response accepted")
++	}
++}
++
++type gptMonitorTestRoundTripper func(*http.Request) (*http.Response, error)
++
++func (f gptMonitorTestRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func gptMonitorTestAccount() *Account {
++	id := int64(7)
++	return &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, ProxyID: &id,
++		Proxy:       &Proxy{ID: id, Status: StatusActive, Protocol: "http", Host: "127.0.0.1", Port: 12345},
++		Credentials: map[string]any{"access_token": "test-token", "chatgpt_account_id": "acct-a", "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339)},
++	}
++}
++
++func TestGPTMonitorRequestIdentityAndNoTools(t *testing.T) {
++	const prompt = "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++	account := gptMonitorTestAccount()
++	account.Credentials["model_mapping"] = map[string]any{"public-alias": "gpt-5.4"}
++	client := &http.Client{Transport: gptMonitorTestRoundTripper(func(r *http.Request) (*http.Response, error) {
++		if r.Method != http.MethodPost || r.URL.String() != chatgptCodexURL {
++			t.Errorf("unexpected endpoint: %s %s", r.Method, r.URL)
++		}
++		if r.Header.Get("Authorization") != "Bearer test-token" || r.Header.Get("Chatgpt-Account-Id") != "acct-a" || r.Header.Get("User-Agent") == "" || r.Header.Get("Originator") == "" || r.Header.Get("X-Codex-Window-ID") == "" {
++			t.Error("identity headers missing")
++		}
++		var payload map[string]any
++		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
++			t.Fatal(err)
++		}
++		if payload["tool_choice"] != "none" || len(payload["tools"].([]any)) != 0 || payload["store"] != false || payload["stream"] != true || payload["model"] != "gpt-5.4" {
++			t.Errorf("invalid probe payload: %+v", payload)
++		}
++		text := payload["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
++		if text != prompt || strings.Contains(text.(string), "17") {
++			t.Errorf("prompt leaked answer or changed: %v", text)
++		}
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(gptMonitorCompleted("iPhone17")))}, nil
++	})}
++	answer, err := gptMonitorProbeWithClient(context.Background(), client, account, "test-token", "public-alias", prompt)
++	if err != nil || answer != "iPhone17" {
++		t.Fatalf("probe: %q %v", answer, err)
++	}
++}
++
++type gptMonitorProbeRepo struct {
++	AccountRepository
++	get func(context.Context, int64) (*Account, error)
++}
++
++func (r *gptMonitorProbeRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
++	return r.get(ctx, id)
++}
++
++type gptMonitorProbeCache struct {
++	OpenAITokenCache
++	calls  int
++	token  string
++	pinned any
++	wait   func()
++}
++
++func (c *gptMonitorProbeCache) GetAccessToken(ctx context.Context, _ string) (string, error) {
++	c.calls++
++	c.pinned = ctx.Value(gptMonitorProxyContextKey{})
++	if c.wait != nil {
++		c.wait()
++	}
++	return c.token, nil
++}
++
++func TestGPTMonitorTokenExpiringDuringCacheWaitDoesNotDisable(t *testing.T) {
++	account := gptMonitorTestAccount()
++	// The account is valid at the probe's first eligibility check. Cache I/O
++	// delays token selection until after its expiry; no provider writes may run.
++	expires := time.Now().Add(30 * time.Millisecond)
++	account.Credentials["expires_at"] = expires.Format(time.RFC3339Nano)
++	cache := &gptMonitorProbeCache{wait: func() { <-time.After(time.Until(expires) + 5*time.Millisecond) }}
++	repo := &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) { return account, nil }}
++	provider := &OpenAITokenProvider{accountRepo: repo, tokenCache: cache}
++	s := &OpenAIGatewayService{accountRepo: repo, openAITokenProvider: provider}
++	// This repo implements no SetError: the old path panics if it disables.
++	if _, _, err := s.resolveGPTMonitorIdentity(context.Background(), 42); err == nil {
++		t.Fatal("expired token accepted")
++	}
++	if cache.calls != 1 || account.Status != StatusActive || !account.Schedulable {
++		t.Fatal("cache boundary skipped or account changed")
++	}
++}
++
++func TestGPTMonitorAccountEligibilityBeforeToken(t *testing.T) {
++	past := time.Now().Add(-time.Hour)
++	cases := map[string]func(*Account){
++		"apikey":                                 func(a *Account) { a.Type = AccountTypeAPIKey },
++		"disabled":                               func(a *Account) { a.Status = StatusDisabled },
++		"other platform":                         func(a *Account) { a.Platform = PlatformAnthropic },
++		"shadow":                                 func(a *Account) { id := int64(1); a.ParentAccountID = &id },
++		"no proxy":                               func(a *Account) { a.ProxyID = nil },
++		"proxy mismatch":                         func(a *Account) { a.Proxy.ID++ },
++		"proxy disabled":                         func(a *Account) { a.Proxy.Status = StatusDisabled },
++		"proxy expired":                          func(a *Account) { a.Proxy.ExpiresAt = &past },
++		"proxy invalid":                          func(a *Account) { a.Proxy.Protocol = "file" },
++		"account expired even without autopause": func(a *Account) { a.ExpiresAt = &past; a.AutoPauseOnExpired = false },
++		"unrefreshable token":                    func(a *Account) { a.Credentials["expires_at"] = past.Format(time.RFC3339) },
++	}
++	for name, mutate := range cases {
++		t.Run(name, func(t *testing.T) {
++			account := gptMonitorTestAccount()
++			mutate(account)
++			cache := &gptMonitorProbeCache{token: "test-token"}
++			s := &OpenAIGatewayService{accountRepo: &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) { return account, nil }}, openAITokenProvider: &OpenAITokenProvider{tokenCache: cache}}
++			if _, _, err := s.ProbeGPTAccount(context.Background(), 42, "gpt-5.4", "question"); err == nil {
++				t.Fatal("ineligible account accepted")
++			}
++			if cache.calls != 0 || !account.Schedulable {
++				t.Fatal("token accessed or schedule changed before eligibility check")
++			}
++		})
++	}
++}
++
++func TestGPTMonitorRereadsIdentityAndProxy(t *testing.T) {
++	for _, change := range []string{"none", "proxy", "proxy timestamp", "token", "disabled", "reread failure"} {
++		t.Run(change, func(t *testing.T) {
++			initial := gptMonitorTestAccount()
++			latest := gptMonitorTestAccount()
++			switch change {
++			case "proxy":
++				latest.Proxy.Port++
++			case "proxy timestamp":
++				latest.Proxy.UpdatedAt = time.Now()
++			case "token":
++				latest.Credentials["access_token"] = "new-token"
++			case "disabled":
++				latest.Status = StatusDisabled
++			}
++			calls := 0
++			repo := &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) {
++				calls++
++				if calls == 1 {
++					return initial, nil
++				}
++				if change == "reread failure" {
++					return nil, errors.New("secret database args")
++				}
++				return latest, nil
++			}}
++			cache := &gptMonitorProbeCache{token: "test-token"}
++			s := &OpenAIGatewayService{accountRepo: repo, openAITokenProvider: &OpenAITokenProvider{tokenCache: cache}}
++			snapshot, token, err := s.resolveGPTMonitorIdentity(context.Background(), 42)
++			if change == "none" {
++				if err != nil || snapshot != latest || token != "test-token" {
++					t.Fatalf("valid reread: %v", err)
++				}
++			} else if err == nil {
++				t.Fatal("changed identity accepted")
++			}
++			if cache.pinned == nil || calls != 2 {
++				t.Fatal("missing proxy pin or account reread")
++			}
++			if err != nil && strings.Contains(err.Error(), "secret") {
++				t.Fatal("sensitive error leaked")
++			}
++		})
++	}
++}
++
++func TestGPTMonitorAccountProxyIsolationNoFallback(t *testing.T) {
++	var hits [2]atomic.Int32
++	var envHits atomic.Int32
++	envProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { envHits.Add(1); w.WriteHeader(502) }))
++	defer envProxy.Close()
++	t.Setenv("HTTPS_PROXY", envProxy.URL)
++	t.Setenv("HTTP_PROXY", envProxy.URL)
++	t.Setenv("NO_PROXY", "*")
++	for i := 0; i < 2; i++ {
++		index := i
++		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			hits[index].Add(1)
++			if r.Method != http.MethodConnect || r.Host != "chatgpt.com:443" {
++				t.Errorf("wrong proxy request: %s %s", r.Method, r.Host)
++			}
++			w.WriteHeader(502)
++		}))
++		u, _ := url.Parse(proxy.URL)
++		port, _ := strconv.Atoi(u.Port())
++		account := gptMonitorTestAccount()
++		account.Proxy.Host = u.Hostname()
++		account.Proxy.Port = port
++		s := &OpenAIGatewayService{accountRepo: &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) { return account, nil }}}
++		_, _, err := s.ProbeGPTAccount(context.Background(), 42, "gpt-5.4", "question")
++		proxy.Close()
++		if err == nil || hits[i].Load() != 1 {
++			t.Fatalf("account proxy %d not used exactly once: %v", i, err)
++		}
++	}
++	if envHits.Load() != 0 || hits[0].Load() != 1 || hits[1].Load() != 1 {
++		t.Fatal("environment or cross-account proxy used")
++	}
++	if _, _, err := newGPTMonitorClient(""); err == nil {
++		t.Fatal("missing proxy accepted")
++	}
++}
++
++func TestGPTMonitorNoRedirectAndSanitizedError(t *testing.T) {
++	client, tr, err := newGPTMonitorClient("http://127.0.0.1:1")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer tr.CloseIdleConnections()
++	calls := 0
++	client.Transport = gptMonitorTestRoundTripper(func(r *http.Request) (*http.Response, error) {
++		calls++
++		return &http.Response{StatusCode: 307, Header: http.Header{"Location": {"https://example.invalid/leak"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
++	})
++	if _, err := gptMonitorProbeWithClient(context.Background(), client, gptMonitorTestAccount(), "test-token", "gpt-5.4", "question"); err == nil || calls != 1 {
++		t.Fatalf("redirect followed: %v calls=%d", err, calls)
++	}
++	client.Transport = gptMonitorTestRoundTripper(func(*http.Request) (*http.Response, error) { return nil, errors.New("secret-token secret-proxy") })
++	if _, err := gptMonitorProbeWithClient(context.Background(), client, gptMonitorTestAccount(), "test-token", "gpt-5.4", "question"); err == nil || strings.Contains(err.Error(), "secret") {
++		t.Fatalf("error leaked: %v", err)
++	}
++}
++
++type gptMonitorRefreshProxyRepo struct {
++	ProxyRepository
++	proxy *Proxy
++	err   error
++}
++
++func (r *gptMonitorRefreshProxyRepo) GetByID(context.Context, int64) (*Proxy, error) {
++	return r.proxy, r.err
++}
++
++type gptMonitorRefreshClient struct {
++	OpenAIOAuthClient
++	calls int
++	proxy string
++	err   error
++}
++
++func (c *gptMonitorRefreshClient) RefreshTokenWithClientID(_ context.Context, _, proxy, _ string) (*openai.TokenResponse, error) {
++	c.calls++
++	c.proxy = proxy
++	if c.err != nil {
++		return nil, c.err
++	}
++	return nil, errors.New("controlled refresh failure")
++}
++
++func TestGPTMonitorRefreshFailureCannotLeakOrUseStaleToken(t *testing.T) {
++	var logs bytes.Buffer
++	previous := slog.Default()
++	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
++	defer slog.SetDefault(previous)
++	account := gptMonitorTestAccount()
++	account.Credentials["expires_at"] = time.Now().Add(time.Minute).Format(time.RFC3339)
++	account.Credentials["refresh_token"] = "private-refresh-token"
++	client := &gptMonitorRefreshClient{err: errors.New("upstream body secret-token secret-proxy password")}
++	repo := &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) { return account, nil }}
++	oauth := &OpenAIOAuthService{proxyRepo: &gptMonitorRefreshProxyRepo{proxy: account.Proxy}, oauthClient: client}
++	provider := NewOpenAITokenProvider(repo, nil, oauth)
++	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil), NewOpenAITokenRefresher(oauth, repo))
++	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL(), UpdatedAt: account.Proxy.UpdatedAt}
++	token, err := provider.GetAccessToken(context.WithValue(context.Background(), gptMonitorProxyContextKey{}, pinned), account)
++	if err == nil || token != "" || client.calls != 1 {
++		t.Fatalf("refresh failure reused stale token: calls=%d token=%q err=%v", client.calls, token, err)
++	}
++	if strings.Contains(err.Error(), "secret") || strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "password") {
++		t.Fatalf("sensitive failure escaped: %v %s", err, logs.String())
++	}
++	if account.Status != StatusActive || !account.Schedulable {
++		t.Fatal("refresh failure changed account schedule")
++	}
++}
++
++func TestGPTMonitorRefreshRequiresPinnedProxy(t *testing.T) {
++	for _, change := range []string{"none", "missing", "disabled", "changed", "timestamp", "lookup error", "account proxy changed"} {
++		t.Run(change, func(t *testing.T) {
++			a := gptMonitorTestAccount()
++			a.Credentials["refresh_token"] = "refresh"
++			pinned := gptMonitorPinnedProxy{ID: a.Proxy.ID, URL: a.Proxy.URL(), UpdatedAt: a.Proxy.UpdatedAt}
++			p := *a.Proxy
++			repo := &gptMonitorRefreshProxyRepo{proxy: &p}
++			switch change {
++			case "missing":
++				repo.proxy = nil
++			case "disabled":
++				p.Status = StatusDisabled
++			case "changed":
++				p.Port++
++			case "timestamp":
++				p.UpdatedAt = time.Now()
++			case "lookup error":
++				repo.err = errors.New("secret db")
++			case "account proxy changed":
++				other := int64(8)
++				a.ProxyID = &other
++			}
++			client := &gptMonitorRefreshClient{}
++			s := &OpenAIOAuthService{proxyRepo: repo, oauthClient: client}
++			_, err := s.RefreshAccountToken(context.WithValue(context.Background(), gptMonitorProxyContextKey{}, pinned), a)
++			if err == nil {
++				t.Fatal("expected controlled failure")
++			}
++			if change == "none" {
++				if client.calls != 1 || client.proxy != pinned.URL {
++					t.Fatal("refresh did not use pinned proxy")
++				}
++			} else if client.calls != 0 {
++				t.Fatal("refresh called with unavailable or changed proxy")
++			}
++		})
++	}
++}
+diff --git a/backend/internal/service/gpt_account_monitor_service.go b/backend/internal/service/gpt_account_monitor_service.go
+new file mode 100644
+index 0000000..4bdf8e7
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_service.go
+@@ -0,0 +1,461 @@
++package service
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++)
++
++// GPTAccountMonitorStore coordinates the built-in worker across server replicas.
++// Failed coordination never falls back to uncoordinated probing or mutations.
++type GPTAccountMonitorStore interface {
++	Acquire(context.Context, string, time.Duration) (bool, error)
++	Renew(context.Context, string, time.Duration) (bool, error)
++	Owns(context.Context, string) (bool, error)
++	Release(context.Context, string) error
++	NextRun(context.Context, string) (time.Time, error)
++	SetNextRun(context.Context, string, time.Time) error
++}
++
++type gptMonitorSchedulingRepository interface {
++	SetGPTMonitorSchedulableIfMatch(context.Context, *Account, bool) (bool, error)
++}
++
++type gptAccountProbe func(context.Context, int64, string, string) (*Account, string, error)
++
++// GPTAccountMonitorResult is stored under account.extra.gpt_account_monitor.
++// It never contains credentials, proxy URLs, or upstream error bodies.
++type GPTAccountMonitorResult struct {
++	CheckedAt          time.Time `json:"checked_at"`
++	Verdict            string    `json:"verdict"`
++	Answer             string    `json:"answer,omitempty"`
++	Message            string    `json:"message"`
++	Model              string    `json:"model"`
++	ExpectedGeneration int       `json:"expected_generation"`
++	Schedulable        bool      `json:"schedulable"`
++	Changed            bool      `json:"changed"`
++}
++
++type GPTAccountMonitorService struct {
++	repo         AccountRepository
++	store        GPTAccountMonitorStore
++	settings     SettingRepository
++	defaults     config.GPTAccountMonitorConfig
++	cfg          config.GPTAccountMonitorConfig
++	probe        gptAccountProbe
++	startOnce    sync.Once
++	stopOnce     sync.Once
++	cycleMu      sync.Mutex
++	mu           sync.Mutex
++	managementMu sync.Mutex
++	cancel       context.CancelFunc
++	activeCancel context.CancelFunc
++	done         chan struct{}
++	trigger      chan string
++	wake         chan struct{}
++	state        GPTAccountMonitorStatus
++}
++
++func NewGPTAccountMonitorService(repo AccountRepository, gateway *OpenAIGatewayService, store GPTAccountMonitorStore, settings SettingRepository, cfg *config.Config) *GPTAccountMonitorService {
++	s := &GPTAccountMonitorService{repo: repo, store: store, settings: settings, trigger: make(chan string, 1), wake: make(chan struct{}, 1)}
++	if cfg != nil {
++		s.cfg = cfg.GPTAccountMonitor
++		s.cfg.AccountIDs = append([]int64(nil), cfg.GPTAccountMonitor.AccountIDs...)
++		s.defaults = s.cfg
++	}
++	if gateway != nil {
++		s.probe = gateway.ProbeGPTAccount
++	}
++	return s
++}
++
++func (s *GPTAccountMonitorService) Start() {
++	if s == nil || (!s.cfg.Enabled && s.settings == nil) {
++		return
++	}
++	s.startOnce.Do(func() {
++		if s.repo == nil || s.store == nil || s.probe == nil || s.cfg.IntervalSeconds < 60 || s.cfg.TimeoutSeconds < 10 || s.cfg.Concurrency < 1 || s.cfg.Concurrency > 10 {
++			logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] not started: missing dependencies or invalid configuration")
++			return
++		}
++		if _, ok := s.repo.(gptMonitorSchedulingRepository); !ok {
++			logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] not started: atomic scheduling unavailable")
++			return
++		}
++		ctx, cancel := context.WithCancel(context.Background())
++		done := make(chan struct{})
++		s.mu.Lock()
++		s.cancel = cancel
++		s.done = done
++		s.mu.Unlock()
++		logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] management worker started")
++		go func() { defer close(done); s.loop(ctx) }()
++	})
++}
++
++func (s *GPTAccountMonitorService) Stop() {
++	if s == nil {
++		return
++	}
++	s.stopOnce.Do(func() {
++		s.mu.Lock()
++		cancel, done := s.cancel, s.done
++		s.mu.Unlock()
++		if cancel == nil {
++			return
++		}
++		cancel()
++		select {
++		case <-done:
++		case <-time.After(5 * time.Second):
++			logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] shutdown deadline reached")
++		}
++	})
++}
++
++func (s *GPTAccountMonitorService) loop(ctx context.Context) {
++	ticker := time.NewTicker(time.Second)
++	defer ticker.Stop()
++	type completion struct {
++		key   string
++		delay time.Duration
++	}
++	completed := make(chan completion, 1)
++	var active bool
++	var lastKey string
++	var next time.Time
++	var queuedKey string
++	var lastRead time.Time
++	var cfg config.GPTAccountMonitorConfig
++	var readErr error
++	for {
++		if time.Since(lastRead) >= 5*time.Second || lastRead.IsZero() {
++			readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
++			cfg, readErr = s.GetConfig(readCtx)
++			cancel()
++			lastRead = time.Now()
++			if readErr != nil {
++				s.setMessage("读取巡检配置失败，等待重试")
++			}
++			key := gptMonitorConfigHash(cfg)
++			if readErr == nil && key != lastKey {
++				lastKey = key
++				s.mu.Lock()
++				s.cfg = cfg
++				if s.activeCancel != nil {
++					s.activeCancel()
++				}
++				s.state.Enabled = cfg.Enabled
++				s.mu.Unlock()
++				next = time.Now().Add(time.Duration(cfg.IntervalSeconds) * time.Second)
++				if cfg.RunOnStart {
++					next = time.Now()
++				}
++				if !cfg.Enabled {
++					s.setMessage("自动巡检已关闭")
++				} else {
++					s.setMessage("等待巡检")
++				}
++			}
++		}
++		if !cfg.Enabled || queuedKey != lastKey {
++			queuedKey = ""
++		}
++		if readErr == nil && cfg.Enabled && !active && (queuedKey != "" || !time.Now().Before(next)) {
++			manual := queuedKey != ""
++			queuedKey = ""
++			active = true
++			runCfg := cfg
++			runKey := lastKey
++			runCtx, cancel := context.WithCancel(ctx)
++			s.mu.Lock()
++			s.activeCancel = cancel
++			s.mu.Unlock()
++			go func() {
++				delay := s.runCycleWithConfig(runCtx, runCfg, manual)
++				cancel()
++				completed <- completion{runKey, delay}
++			}()
++		}
++		s.mu.Lock()
++		if cfg.Enabled && !active {
++			n := next
++			s.state.NextRun = &n
++		} else {
++			s.state.NextRun = nil
++		}
++		s.mu.Unlock()
++		select {
++		case <-ctx.Done():
++			s.mu.Lock()
++			if s.activeCancel != nil {
++				s.activeCancel()
++			}
++			s.mu.Unlock()
++			if active {
++				select {
++				case <-completed:
++				case <-time.After(4 * time.Second):
++				}
++			}
++			return
++		case <-ticker.C:
++		case key := <-s.trigger:
++			queuedKey = key
++			lastRead = time.Time{}
++		case <-s.wake:
++			lastRead = time.Time{}
++		case result := <-completed:
++			active = false
++			s.mu.Lock()
++			s.activeCancel = nil
++			s.mu.Unlock()
++			if result.key == lastKey {
++				next = time.Now().Add(result.delay)
++			}
++		}
++	}
++}
++
++func (s *GPTAccountMonitorService) runCycle(parent context.Context) time.Duration {
++	s.mu.Lock()
++	cfg := s.cfg
++	s.mu.Unlock()
++	return s.runCycleWithConfig(parent, cfg, false)
++}
++func (s *GPTAccountMonitorService) runCycleWithConfig(parent context.Context, cfg config.GPTAccountMonitorConfig, manual bool) time.Duration {
++	s.cycleMu.Lock()
++	defer s.cycleMu.Unlock()
++	retry := 30 * time.Second
++	if parent.Err() != nil {
++		return retry
++	}
++	ctx, cancel := context.WithCancel(parent)
++	defer cancel()
++	var random [24]byte
++	if _, err := rand.Read(random[:]); err != nil {
++		return retry
++	}
++	owner := hex.EncodeToString(random[:])
++	leaseCtx, leaseCancel := context.WithTimeout(ctx, 5*time.Second)
++	owned, err := s.store.Acquire(leaseCtx, owner, 180*time.Second)
++	leaseCancel()
++	if err != nil {
++		s.logError("lease acquisition failed")
++		return retry
++	}
++	if !owned {
++		return retry
++	}
++	defer func() {
++		rctx, rcancel := context.WithTimeout(context.Background(), 3*time.Second)
++		defer rcancel()
++		_ = s.store.Release(rctx, owner)
++	}()
++	renewDone := make(chan struct{})
++	go func() {
++		defer close(renewDone)
++		ticker := time.NewTicker(45 * time.Second)
++		defer ticker.Stop()
++		for {
++			select {
++			case <-ctx.Done():
++				return
++			case <-ticker.C:
++				leaseCtx, leaseCancel := context.WithTimeout(ctx, 5*time.Second)
++				ok, e := s.store.Renew(leaseCtx, owner, 180*time.Second)
++				leaseCancel()
++				if e != nil || !ok {
++					s.logError("lease lost; stopping current scan")
++					cancel()
++					return
++				}
++			}
++		}
++	}()
++	defer func() { cancel(); <-renewDone }()
++	configKey := gptMonitorConfigHash(cfg)
++	dueCtx, dueCancel := context.WithTimeout(ctx, 5*time.Second)
++	next, err := s.store.NextRun(dueCtx, configKey)
++	dueCancel()
++	if err != nil {
++		s.logError("shared schedule unavailable")
++		return retry
++	}
++	if !manual && next.After(time.Now()) {
++		return time.Until(next)
++	}
++	started := time.Now().UTC()
++	s.mu.Lock()
++	s.state.Running = true
++	s.state.LastRun = &started
++	s.state.Message = "正在巡检"
++	s.mu.Unlock()
++	defer func() { s.mu.Lock(); s.state.Running = false; s.mu.Unlock() }()
++	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
++	accounts, err := s.repo.ListByPlatform(listCtx, PlatformOpenAI)
++	listCancel()
++	if err != nil {
++		s.logError("account listing failed")
++		return retry
++	}
++	selected := make(map[int64]bool, len(cfg.AccountIDs))
++	for _, id := range cfg.AccountIDs {
++		selected[id] = true
++	}
++	jobs := make(chan Account)
++	var wg sync.WaitGroup
++	for i := 0; i < cfg.Concurrency; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for a := range jobs {
++				if ctx.Err() != nil {
++					return
++				}
++				s.checkOne(ctx, owner, &a, cfg)
++			}
++		}()
++	}
++	count := 0
++	for _, a := range accounts {
++		if !gptMonitorEligible(&a) || (len(selected) > 0 && !selected[a.ID]) {
++			continue
++		}
++		if ctx.Err() != nil {
++			break
++		}
++		select {
++		case <-ctx.Done():
++		case jobs <- a:
++			count++
++		}
++	}
++	close(jobs)
++	wg.Wait()
++	if ctx.Err() != nil {
++		return retry
++	}
++	interval := time.Duration(cfg.IntervalSeconds) * time.Second
++	saveCtx, saveCancel := context.WithTimeout(ctx, 5*time.Second)
++	err = s.store.SetNextRun(saveCtx, configKey, time.Now().Add(interval))
++	saveCancel()
++	if err != nil {
++		s.logError("scan completed but shared schedule write failed")
++		return retry
++	}
++	s.setMessage(fmt.Sprintf("本轮巡检完成，共 %d 个账号", count))
++	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] scan complete: accounts=%d next_run_in=%ds", count, cfg.IntervalSeconds)
++	return interval
++}
++
++func gptMonitorEligible(a *Account) bool {
++	return a != nil && a.ID > 0 && a.Platform == PlatformOpenAI && a.Type == AccountTypeOAuth && a.Status == StatusActive && !a.IsShadow() && (a.ExpiresAt == nil || a.ExpiresAt.After(time.Now()))
++}
++
++func (s *GPTAccountMonitorService) checkOne(parent context.Context, owner string, listed *Account, cfg config.GPTAccountMonitorConfig) {
++	ctx, cancel := context.WithTimeout(parent, time.Duration(cfg.TimeoutSeconds+10)*time.Second)
++	defer cancel()
++	r := GPTAccountMonitorResult{CheckedAt: time.Now().UTC(), Verdict: "error", Model: cfg.Model, ExpectedGeneration: cfg.ExpectedGeneration, Schedulable: listed.Schedulable}
++	probeCtx, probeCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutSeconds)*time.Second)
++	snapshot, answer, err := s.probe(probeCtx, listed.ID, cfg.Model, cfg.Prompt)
++	probeCancel()
++	if parent.Err() != nil {
++		return
++	}
++	if err != nil {
++		r.Message = "检测失败（网络、认证、代理或响应不完整），调度未改变"
++		s.saveResult(parent, listed.ID, r)
++		return
++	}
++	if !gptMonitorEligible(snapshot) || snapshot.ID != listed.ID {
++		r.Message = "账号不再符合巡检条件，调度未改变"
++		s.saveResult(parent, listed.ID, r)
++		return
++	}
++	r.Schedulable = snapshot.Schedulable
++	r.Answer = gptMonitorTruncate(answer, 2048)
++	pass := GPTAccountAnswerMatches(answer, cfg.ExpectedGeneration)
++	if pass {
++		r.Verdict = "normal"
++		r.Message = "回答符合规则"
++	} else {
++		r.Verdict = "abnormal"
++		r.Message = "回答不符合规则"
++	}
++	if snapshot.Schedulable == pass {
++		s.saveResult(parent, listed.ID, r)
++		return
++	}
++	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
++	defer writeCancel()
++	s.managementMu.Lock()
++	defer s.managementMu.Unlock()
++	current, configErr := s.GetConfig(writeCtx)
++	if configErr != nil || !current.Enabled || gptMonitorConfigHash(current) != gptMonitorConfigHash(cfg) {
++		return
++	}
++	owned, err := s.store.Owns(writeCtx, owner)
++	if err != nil || !owned {
++		r.Verdict = "error"
++		r.Message = "检测租约失效，调度未改变"
++		s.saveResult(parent, listed.ID, r)
++		return
++	}
++	repo, ok := s.repo.(gptMonitorSchedulingRepository)
++	if !ok {
++		r.Verdict = "error"
++		r.Message = "调度更新不可用"
++		s.saveResult(parent, listed.ID, r)
++		return
++	}
++	changed, err := repo.SetGPTMonitorSchedulableIfMatch(writeCtx, snapshot, pass)
++	if err != nil || !changed {
++		r.Verdict = "error"
++		r.Message = "账号或代理在检测期间变化，调度未改变"
++	} else {
++		r.Changed = true
++		r.Schedulable = pass
++		if pass {
++			r.Message += "，已开启调度"
++		} else {
++			r.Message += "，已关闭调度"
++		}
++	}
++	s.saveResult(parent, listed.ID, r)
++}
++
++func (s *GPTAccountMonitorService) saveResult(parent context.Context, id int64, result GPTAccountMonitorResult) {
++	if parent.Err() != nil {
++		return
++	}
++	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
++	defer cancel()
++	if err := s.repo.UpdateExtra(ctx, id, map[string]any{"gpt_account_monitor": result}); err != nil {
++		s.logError(fmt.Sprintf("account=%d result persistence failed", id))
++	}
++	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] account=%d verdict=%s schedulable=%t changed=%t message=%s", id, result.Verdict, result.Schedulable, result.Changed, result.Message)
++}
++
++func (s *GPTAccountMonitorService) logError(message string) {
++	s.setMessage("巡检暂未完成，请查看服务日志")
++	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] %s", message)
++}
++func (s *GPTAccountMonitorService) setMessage(message string) {
++	s.mu.Lock()
++	s.state.Message = message
++	s.mu.Unlock()
++}
++func gptMonitorTruncate(text string, maxRunes int) string {
++	r := []rune(text)
++	if len(r) > maxRunes {
++		return string(r[:maxRunes]) + "…"
++	}
++	return text
++}
+diff --git a/backend/internal/service/gpt_account_monitor_service_test.go b/backend/internal/service/gpt_account_monitor_service_test.go
+new file mode 100644
+index 0000000..b1e9475
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_service_test.go
+@@ -0,0 +1,204 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/stretchr/testify/require"
++)
++
++type gptMonitorRepoStub struct {
++	AccountRepository
++	mu        sync.Mutex
++	accounts  []Account
++	writes    map[int64]bool
++	results   map[int64]GPTAccountMonitorResult
++	casFail   bool
++	listCalls int
++}
++
++func (r *gptMonitorRepoStub) ListByPlatform(_ context.Context, platform string) ([]Account, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.listCalls++
++	return r.accounts, nil
++}
++func (r *gptMonitorRepoStub) SetGPTMonitorSchedulableIfMatch(_ context.Context, a *Account, value bool) (bool, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.casFail {
++		return false, nil
++	}
++	r.writes[a.ID] = value
++	return true, nil
++}
++func (r *gptMonitorRepoStub) UpdateExtra(_ context.Context, id int64, extra map[string]any) error {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.results[id] = extra["gpt_account_monitor"].(GPTAccountMonitorResult)
++	return nil
++}
++
++type gptMonitorStoreStub struct {
++	acquired bool
++	owned    bool
++	next     time.Time
++	err      error
++	released bool
++}
++
++func (s *gptMonitorStoreStub) Acquire(context.Context, string, time.Duration) (bool, error) {
++	return s.acquired, s.err
++}
++func (s *gptMonitorStoreStub) Renew(context.Context, string, time.Duration) (bool, error) {
++	return s.owned, s.err
++}
++func (s *gptMonitorStoreStub) Owns(context.Context, string) (bool, error) { return s.owned, s.err }
++func (s *gptMonitorStoreStub) Release(context.Context, string) error      { s.released = true; return nil }
++func (s *gptMonitorStoreStub) NextRun(context.Context, string) (time.Time, error) {
++	return s.next, s.err
++}
++func (s *gptMonitorStoreStub) SetNextRun(_ context.Context, _ string, next time.Time) error {
++	s.next = next
++	return s.err
++}
++func gptMonitorFixture() (*GPTAccountMonitorService, *gptMonitorRepoStub, *gptMonitorStoreStub) {
++	r := &gptMonitorRepoStub{writes: map[int64]bool{}, results: map[int64]GPTAccountMonitorResult{}}
++	for id := int64(1); id <= 6; id++ {
++		r.accounts = append(r.accounts, Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: id%2 == 1})
++	}
++	store := &gptMonitorStoreStub{acquired: true, owned: true}
++	cfg := &config.Config{GPTAccountMonitor: config.GPTAccountMonitorConfig{Enabled: true, IntervalSeconds: 1800, TimeoutSeconds: 10, Concurrency: 3, Model: "gpt-5.4", Prompt: config.DefaultGPTAccountMonitorPrompt, ExpectedGeneration: 17}}
++	return NewGPTAccountMonitorService(r, nil, store, nil, cfg), r, store
++}
++func TestGPTAccountMonitorDisablesAndRecoversOnlyOAuth(t *testing.T) {
++	s, r, store := gptMonitorFixture()
++	r.accounts[3].Type = AccountTypeAPIKey
++	r.accounts[4].Status = StatusDisabled
++	parent := int64(1)
++	r.accounts[5].ParentAccountID = &parent
++	s.probe = func(_ context.Context, id int64, model, prompt string) (*Account, string, error) {
++		require.Equal(t, "gpt-5.4", model)
++		require.Equal(t, config.DefaultGPTAccountMonitorPrompt, prompt)
++		switch id {
++		case 1:
++			return &r.accounts[0], "iPhone16", nil
++		case 2:
++			return &r.accounts[1], "iPhone17 Pro", nil
++		case 3:
++			return nil, "", errors.New("proxy/token secret must not be persisted")
++		}
++		t.Errorf("ineligible account probed: %d", id)
++		return nil, "", errors.New("unexpected")
++	}
++	interval := s.runCycle(context.Background())
++	require.Equal(t, 30*time.Minute, interval)
++	require.Equal(t, map[int64]bool{1: false, 2: true}, r.writes)
++	require.Len(t, r.results, 3)
++	require.Equal(t, "error", r.results[3].Verdict)
++	require.NotContains(t, r.results[3].Message, "secret")
++	require.True(t, r.results[2].Changed)
++	require.True(t, r.results[2].Schedulable)
++	require.True(t, store.released)
++}
++func TestGPTAccountMonitorSharedScheduleAndLease(t *testing.T) {
++	s, r, store := gptMonitorFixture()
++	calls := 0
++	s.cfg.Concurrency = 1
++	s.cfg.AccountIDs = []int64{2}
++	s.probe = func(_ context.Context, id int64, _, _ string) (*Account, string, error) {
++		calls++
++		return &r.accounts[id-1], "iPhone17", nil
++	}
++	store.acquired = false
++	s.runCycle(context.Background())
++	require.Zero(t, calls)
++	store.acquired = true
++	store.next = time.Now().Add(time.Hour)
++	s.runCycle(context.Background())
++	require.Zero(t, calls)
++	store.next = time.Time{}
++	s.runCycle(context.Background())
++	require.Equal(t, 1, calls)
++	require.Len(t, r.writes, 1)
++	s.runCycle(context.Background())
++	require.Equal(t, 1, calls, "another replica/restart must respect next-run time")
++}
++func TestGPTAccountMonitorCASOrLeaseFailureDoesNotClaimRecovery(t *testing.T) {
++	for _, scenario := range []string{"cas", "lease"} {
++		t.Run(scenario, func(t *testing.T) {
++			s, r, store := gptMonitorFixture()
++			s.cfg.AccountIDs = []int64{2}
++			if scenario == "cas" {
++				r.casFail = true
++			} else {
++				store.owned = false
++			}
++			s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++				return &r.accounts[1], "iPhone17", nil
++			}
++			s.runCycle(context.Background())
++			require.Empty(t, r.writes)
++			require.Equal(t, "error", r.results[2].Verdict)
++			require.False(t, r.results[2].Schedulable)
++			require.False(t, r.results[2].Changed)
++		})
++	}
++}
++func TestGPTAccountMonitorCancellationAndExpiredSelection(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	past := time.Now().Add(-time.Hour)
++	for i := range r.accounts {
++		r.accounts[i].ExpiresAt = &past
++	}
++	s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++		t.Error("expired account probed")
++		return nil, "", errors.New("unexpected")
++	}
++	s.runCycle(context.Background())
++	require.Empty(t, r.results)
++	require.Empty(t, r.writes)
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	s.runCycle(ctx)
++	require.Equal(t, 1, r.listCalls)
++}
++func TestGPTAccountMonitorShutdownCancelsProbe(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	s.cfg.RunOnStart = true
++	s.cfg.AccountIDs = []int64{2}
++	started := make(chan struct{})
++	exited := make(chan struct{})
++	s.probe = func(ctx context.Context, _ int64, _, _ string) (*Account, string, error) {
++		close(started)
++		<-ctx.Done()
++		close(exited)
++		return nil, "", ctx.Err()
++	}
++	s.Start()
++	select {
++	case <-started:
++	case <-time.After(4 * time.Second):
++		t.Fatal("worker did not start")
++	}
++	s.Stop()
++	select {
++	case <-exited:
++	default:
++		t.Fatal("probe still running")
++	}
++	require.Empty(t, r.writes)
++	require.Empty(t, r.results)
++}
++func TestGPTAccountMonitorDefaultDisabled(t *testing.T) {
++	s, r, _ := gptMonitorFixture()
++	s.cfg.Enabled = false
++	s.Start()
++	s.Stop()
++	require.Nil(t, s.done)
++	require.Zero(t, r.listCalls)
++}
+diff --git a/backend/internal/service/openai_oauth_service.go b/backend/internal/service/openai_oauth_service.go
+index 5eef594..b3eebc0 100644
+--- a/backend/internal/service/openai_oauth_service.go
++++ b/backend/internal/service/openai_oauth_service.go
+@@ -345,7 +345,18 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
+ 	}
+ 
+ 	var proxyURL string
+-	if account.ProxyID != nil && s.proxyRepo != nil {
++	if pinned, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++		// A monitor probe must refresh through exactly its checked account proxy.
++		// Missing/changed proxy state must never fall back to the direct network.
++		if pinned.URL == "" || account.ProxyID == nil || *account.ProxyID != pinned.ID || s.proxyRepo == nil {
++			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_UNAVAILABLE", "monitor account proxy is unavailable")
++		}
++		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
++		if err != nil || validateGPTMonitorProxy(proxy) != nil || proxy.ID != pinned.ID || proxy.URL() != pinned.URL || !proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
++			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_CHANGED", "monitor account proxy changed or is unavailable")
++		}
++		proxyURL = pinned.URL
++	} else if account.ProxyID != nil && s.proxyRepo != nil {
+ 		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
+ 		if err == nil && proxy != nil {
+ 			proxyURL = proxy.URL()
+diff --git a/backend/internal/service/openai_token_provider.go b/backend/internal/service/openai_token_provider.go
+index b10f52f..839181b 100644
+--- a/backend/internal/service/openai_token_provider.go
++++ b/backend/internal/service/openai_token_provider.go
+@@ -160,6 +160,11 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
+ 	if needsRefresh && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
+ 		if expiresAt != nil && !time.Now().Before(*expiresAt) {
+ 			const reason = "openai access_token expired and refresh_token is missing"
++			// A monitor's token can expire while waiting on the cache. Preserve
++			// scheduling for this inconclusive probe even after the initial check.
++			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++				return "", errors.New(reason)
++			}
+ 			// 永久故障：缺失 refresh_token 时账号无法自愈，必须立即从调度池剔除，
+ 			// 否则会被反复选中、每次都在 token 阶段直接返回错误，对用户呈现持续 502。
+ 			p.disableAccountMissingRefreshToken(account, reason)
+@@ -175,6 +180,12 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
+ 
+ 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
+ 		if err != nil {
++			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++				// Refresh errors can contain provider bodies or proxy credentials.
++				// An inconclusive monitor must neither log them nor use a stale token.
++				p.metrics.refreshFailure.Add(1)
++				return "", errors.New("monitor OAuth refresh failed")
++			}
+ 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+ 				return "", err
+ 			}
+diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
+index ec3058d..6d1080e 100644
+--- a/backend/internal/service/wire.go
++++ b/backend/internal/service/wire.go
+@@ -118,6 +118,13 @@ func ProvideOpenAIOAuthService(
+ 	return svc
+ }
+ 
++// ProvideGPTAccountMonitorService starts the built-in scheduled OAuth probe.
++func ProvideGPTAccountMonitorService(accountRepo AccountRepository, gateway *OpenAIGatewayService, store GPTAccountMonitorStore, settings SettingRepository, cfg *config.Config) *GPTAccountMonitorService {
++	svc := NewGPTAccountMonitorService(accountRepo, gateway, store, settings, cfg)
++	svc.Start()
++	return svc
++}
++
+ // ProvideTokenRefreshService creates and starts TokenRefreshService
+ func ProvideTokenRefreshService(
+ 	accountRepo AccountRepository,
+@@ -937,6 +944,7 @@ var ProviderSet = wire.NewSet(
+ 	NewCRSSyncService,
+ 	ProvideUpdateService,
+ 	ProvideTokenRefreshService,
++	ProvideGPTAccountMonitorService,
+ 	wire.Bind(new(GrokOAuthReconciler), new(*TokenRefreshService)),
+ 	ProvideAccountExpiryService,
+ 	ProvideOpenAICodexVersionSyncService,
+diff --git a/deploy/.env.example b/deploy/.env.example
+index fa10e83..852d448 100644
+--- a/deploy/.env.example
++++ b/deploy/.env.example
+@@ -477,3 +477,21 @@ OPS_ENABLED=true
+ # Leave empty for direct connection (recommended for overseas servers)
+ # 留空表示直连（适用于海外服务器）
+ UPDATE_PROXY_URL=
++
++# -----------------------------------------------------------------------------
++# Built-in GPT OAuth Account Monitor (内置定时账号检查)
++# -----------------------------------------------------------------------------
++# 仅 OAuth 母账号；检查走各账号自己的代理，不介入普通用户请求。
++# 缺少有效代理、网络异常、鉴权失败时不修改调度；此问题为自定义检查规则。
++# Docker Compose 须将这些变量传入 sub2api 服务的 environment，单独写 .env 不会自动传入。
++# 管理页「GPT 账号检查」保存配置后，数据库配置优先于这些环境变量并自动生效。
++GPT_ACCOUNT_MONITOR_ENABLED=false
++GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS=1800
++GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS=90
++GPT_ACCOUNT_MONITOR_CONCURRENCY=3
++GPT_ACCOUNT_MONITOR_MODEL=gpt-5.4
++GPT_ACCOUNT_MONITOR_PROMPT=不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。
++GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION=17
++# 逗号分隔账号 ID，例如 12,34；留空表示全部符合条件的账号。
++GPT_ACCOUNT_MONITOR_ACCOUNT_IDS=
++GPT_ACCOUNT_MONITOR_RUN_ON_START=true
+diff --git a/deploy/config.example.yaml b/deploy/config.example.yaml
+index 7066f17..1c8bae2 100644
+--- a/deploy/config.example.yaml
++++ b/deploy/config.example.yaml
+@@ -1297,3 +1297,21 @@ image_storage:
+   presign_expiry_hours: 24
+   # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
+   max_download_bytes: 33554432
++
++# 内置 GPT OAuth 账号定时检查；与普通用户请求相互独立，无需插件或管理员 API Key。
++# 仅检查 active 的 OpenAI OAuth 母账号，包含已暂停调度的账号。
++# 检查请求强制使用账号绑定的有效代理；缺少代理或请求异常时保持调度状态。
++# 回答型号符合 expected_generation 则开启调度，否则关闭调度；该问题仅为自定义规则。
++gpt_account_monitor:
++  # 首次启动使用此处和环境变量的默认值；管理页保存后，数据库配置优先并自动生效。
++  # 后台菜单「GPT 账号检查」可修改配置、立即检查和查看最近结果。
++  enabled: false
++  interval_seconds: 1800
++  timeout_seconds: 90
++  concurrency: 3
++  model: "gpt-5.4"
++  prompt: "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++  expected_generation: 17
++  # 空列表表示全部符合条件的账号；可填写 [12, 34]。
++  account_ids: []
++  run_on_start: true
+diff --git a/deploy/gpt-account-monitor/README.md b/deploy/gpt-account-monitor/README.md
+new file mode 100644
+index 0000000..e9eb3c0
+--- /dev/null
++++ b/deploy/gpt-account-monitor/README.md
+@@ -0,0 +1,73 @@
++# Sub2API 0.2.15：GPT 账号巡检管理页
++
++安装包：`sub2api-0.2.15-gpt-monitor-ui.tar.gz`。基于上游提交 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，包含 Linux amd64、arm64 程序。
++
++这是内置管理页，直接替换现有容器中的程序。无需插件、公钥、管理员 API Key 或新增容器；普通用户请求继续使用原有转发流程。脚本保留当前镜像，仅重建指定的应用服务，重建时应用会短暂中断。
++
++## 三步安装
++
++1. 将安装包放到**原 Docker Compose 部署目录**，在该目录解压：
++
++   ```sh
++   tar -xzf sub2api-0.2.15-gpt-monitor-ui.tar.gz
++   ```
++
++2. 在同一目录执行。第一个参数是原 Compose 文件，第二个是服务名，可按实际名称替换：
++
++   ```sh
++   sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
++   ```
++
++   脚本会校验文件、确认当前运行版本恰为 `0.2.15`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
++
++3. 浏览器强制刷新后台，打开左侧 **GPT 账号巡检**，或直接访问 `/admin/gpt-account-monitor`。检查默认关闭；在页面保存并启用，然后点击“立即检查”查看结果。
++
++页面可修改间隔、超时、并发、模型、问题、目标 iPhone 代数及账号范围。页面保存的配置写入数据库，优先于环境变量与配置文件，自动生效，无需为每次修改重启容器。默认间隔 30 分钟、代数 17；问题按你指定的规则检查，并不代表通用智力测量。
++
++仅处理启用状态的独立 OpenAI OAuth 账号，包含关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用及已过期账号。每个账号必须绑定启用且未过期的代理，检测和必要的令牌刷新使用该账号代理。缺少有效代理、网络或认证失败时保留调度状态。有效完整回答符合目标型号则开启调度，不符合则关闭，之后继续复检。
++
++## 后续启动和回滚
++
++安装后，应用服务的后续 Compose 操作应同时带上两个文件：
++
++```sh
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml up -d --no-deps sub2api
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml logs --tail=100 sub2api
++```
++
++程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15`。
++
++```sh
++sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
++```
++
++回滚使用原 Compose 文件，仅重建应用服务，不执行 `down`、不删除数据卷。配置和已有检查结果保留；检查已改变的账号调度开关不会自动还原。回滚后只使用原 Compose 文件，保留的覆盖文件不再加载。
++
++## 原部署使用多个 Compose 文件或自定义选项
++
++如果原来使用多个 `-f`、`-p` 项目名、`--env-file`、远程 Docker daemon 或多副本，请保留原命令全部选项并手动操作，不直接运行上述脚本。远程 Docker 的绑定路径必须存在于 daemon 所在服务器。
++
++1. 在解压目录执行 `sha256sum -c SHA256SUMS`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
++2. 创建同名覆盖文件；将下面镜像 ID、绝对路径、架构和服务名替换为实际值。保留原命令的全部 Compose 文件顺序，只在最后追加新文件：
++
++   ```yaml
++   services:
++     sub2api:
++       image: 'sha256:当前运行容器的完整镜像ID'
++       pull_policy: never
++       volumes:
++         - type: bind
++           source: '/原部署目录/gpt-monitor-patch/bin/linux-amd64/sub2api'
++           target: /app/sub2api
++           read_only: true
++           bind:
++             create_host_path: false
++   ```
++
++   ```sh
++   docker compose -p 原项目名 --env-file 原环境文件 -f 原文件一.yml -f 原文件二.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build sub2api
++   ```
++
++3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
++
++安装脚本已通过模拟 Docker 命令验证；交付前未连接你的实际 Docker、数据库或账号。
+diff --git a/deploy/gpt-account-monitor/apply.sh b/deploy/gpt-account-monitor/apply.sh
+new file mode 100644
+index 0000000..d8b8581
+--- /dev/null
++++ b/deploy/gpt-account-monitor/apply.sh
+@@ -0,0 +1,89 @@
++#!/bin/sh
++# Apply the built-in management-page binary to one existing Compose service.
++set -eu
++set -f
++
++fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
++if [ "$#" -gt 2 ]; then
++  fail '用法：sh gpt-monitor-patch/apply.sh docker-compose.yml [sub2api]'
++fi
++compose_file=docker-compose.yml
++service=sub2api
++if [ "$#" -ge 1 ]; then compose_file=$1; fi
++if [ "$#" -ge 2 ]; then service=$2; fi
++case "$service" in ''|*[!a-zA-Z0-9_.-]*) fail '服务名只能包含字母、数字、下划线、点和短横线' ;; esac
++[ -f "$compose_file" ] || fail '找不到原 Compose 文件；请在原部署目录执行'
++compose_dir=$(CDPATH= cd -- "$(dirname -- "$compose_file")" && pwd -P)
++[ "$(pwd -P)" = "$compose_dir" ] || fail '请先进入原 Compose 文件所在目录，再执行安装脚本'
++compose_file="$compose_dir/$(basename -- "$compose_file")"
++bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
++override_file="$compose_dir/docker-compose.gpt-monitor.yml"
++case "$bundle_dir$compose_file" in
++  *'
++'*) fail '路径不能包含换行符' ;;
++esac
++[ ! -e "$override_file" ] && [ ! -L "$override_file" ] || fail 'docker-compose.gpt-monitor.yml 已存在；为避免覆盖，已停止安装'
++command -v sha256sum >/dev/null 2>&1 || fail '系统缺少 sha256sum'
++[ -f "$bundle_dir/SHA256SUMS" ] || fail '安装包缺少 SHA256SUMS'
++[ -f "$bundle_dir/UPSTREAM_BASE.txt" ] || fail '安装包缺少 UPSTREAM_BASE.txt'
++[ -f "$bundle_dir/bin/linux-amd64/sub2api" ] || fail '安装包缺少 amd64 程序'
++[ -f "$bundle_dir/bin/linux-arm64/sub2api" ] || fail '安装包缺少 arm64 程序'
++(cd "$bundle_dir" && sha256sum -c SHA256SUMS) || fail '文件校验失败，请重新获取完整安装包'
++command -v docker >/dev/null 2>&1 || fail '找不到 docker 命令'
++docker compose version >/dev/null 2>&1 || fail '需要 Docker Compose v2（docker compose）'
++
++base_compose() { docker compose -f "$compose_file" "$@"; }
++container_id=$(base_compose ps -q "$service") || fail '读取现有 Compose 服务失败'
++case "$container_id" in ''|*[!0-9a-f]*) fail '原部署中必须有且只有一个正在运行的指定服务；多副本部署请按说明手动操作' ;; esac
++current_version=$(base_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取现有程序版本；未修改容器'
++version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
++[ "$version" = '0.2.15' ] || fail '本安装包仅适用于当前运行版本 0.2.15；未修改容器'
++case "$current_version" in *'commit: ab80abc-gpt-monitor-ui-v1,'*) fail '当前程序已包含此管理页版本，无需重复安装' ;; esac
++image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
++case "$image_id" in sha256:*) ;; *) fail '无法确认当前容器的镜像 ID' ;; esac
++platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
++case "$platform" in
++  linux/amd64) binary="$bundle_dir/bin/linux-amd64/sub2api" ;;
++  linux/arm64) binary="$bundle_dir/bin/linux-arm64/sub2api" ;;
++  *) fail '仅支持 Linux amd64 和 arm64 镜像；未修改容器' ;;
++esac
++[ -x "$binary" ] || fail '程序缺少执行权限；请用 tar 在 Linux 上重新解压安装包'
++
++# Quote YAML and escape Compose interpolation in the absolute bind-mount path.
++yaml_binary=$(printf '%s' "$binary" | sed "s/'/''/g" | sed 's/\$/$$/g')
++yaml_image=$(printf '%s' "$image_id" | sed "s/'/''/g")
++(
++  umask 077
++  set -C
++  cat > "$override_file" <<EOF
++# Generated by gpt-monitor-patch/apply.sh. Keep the package directory in place.
++services:
++  '$service':
++    image: '$yaml_image'
++    pull_policy: never
++    volumes:
++      - type: bind
++        source: '$yaml_binary'
++        target: /app/sub2api
++        read_only: true
++        bind:
++          create_host_path: false
++EOF
++) || fail '创建覆盖配置失败；未修改容器'
++
++docker compose -f "$compose_file" -f "$override_file" config --quiet || fail 'Compose 配置检查失败；保留覆盖文件供检查，未重建容器'
++docker compose -f "$compose_file" -f "$override_file" up -d --no-deps --force-recreate --pull never --no-build "$service" || fail '服务重建失败；请执行安装包内 rollback.sh 回滚'
++
++attempt=0
++verified=false
++while [ "$attempt" -lt 15 ]; do
++  attempt=$((attempt + 1))
++  installed_version=$(docker compose -f "$compose_file" -f "$override_file" exec -T "$service" /app/sub2api --version 2>&1) || installed_version=''
++  case "$installed_version" in
++    *'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1,'*) verified=true; break ;;
++  esac
++  sleep 2
++done
++[ "$verified" = true ] || fail '服务已重建，但未确认新程序版本；请查看容器日志或执行 rollback.sh'
++printf '\n安装完成。刷新后台，打开「GPT 账号巡检」或 /admin/gpt-account-monitor，保存并启用检查。\n'
++printf '后续启动须同时传入原 Compose 文件和 docker-compose.gpt-monitor.yml；请保留 gpt-monitor-patch 目录。\n'
+diff --git a/deploy/gpt-account-monitor/rollback.sh b/deploy/gpt-account-monitor/rollback.sh
+new file mode 100644
+index 0000000..f37d2cf
+--- /dev/null
++++ b/deploy/gpt-account-monitor/rollback.sh
+@@ -0,0 +1,22 @@
++#!/bin/sh
++# Recreate only the existing application service using its original Compose file.
++set -eu
++
++fail() { printf '回滚失败：%s\n' "$*" >&2; exit 1; }
++[ "$#" -le 2 ] || fail '用法：sh gpt-monitor-patch/rollback.sh docker-compose.yml [sub2api]'
++compose_file=docker-compose.yml
++service=sub2api
++if [ "$#" -ge 1 ]; then compose_file=$1; fi
++if [ "$#" -ge 2 ]; then service=$2; fi
++case "$service" in ''|*[!a-zA-Z0-9_.-]*) fail '服务名无效' ;; esac
++[ -f "$compose_file" ] || fail '找不到原 Compose 文件；请在原部署目录执行'
++compose_dir=$(CDPATH= cd -- "$(dirname -- "$compose_file")" && pwd -P)
++[ "$(pwd -P)" = "$compose_dir" ] || fail '请先进入原 Compose 文件所在目录'
++compose_file="$compose_dir/$(basename -- "$compose_file")"
++command -v docker >/dev/null 2>&1 || fail '找不到 docker 命令'
++docker compose version >/dev/null 2>&1 || fail '需要 Docker Compose v2'
++docker compose -f "$compose_file" config --quiet || fail '原 Compose 配置检查失败'
++docker compose -f "$compose_file" up -d --no-deps --force-recreate --pull never --no-build "$service" || fail '服务重建失败，请查看原 Compose 配置和容器日志'
++printf '\n已使用原 Compose 配置重建应用服务。未执行 down，也未删除数据卷。\n'
++printf '以后只使用原 Compose 文件；保留的 docker-compose.gpt-monitor.yml 不再加载。\n'
++printf '此前检查修改的账号调度开关不会自动还原，请按需在账号管理中调整。\n'
+diff --git a/deploy/gpt-account-monitor/test_scripts.py b/deploy/gpt-account-monitor/test_scripts.py
+new file mode 100644
+index 0000000..9b0ca79
+--- /dev/null
++++ b/deploy/gpt-account-monitor/test_scripts.py
+@@ -0,0 +1,194 @@
++"""Run deployment-script tests with a fake docker command; no daemon is used."""
++import hashlib
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import tempfile
++import unittest
++
++
++HERE = Path(__file__).resolve().parent
++BASH = shutil.which("bash")
++if not BASH and Path("C:/Program Files/Git/bin/bash.exe").exists():
++    BASH = "C:/Program Files/Git/bin/bash.exe"
++
++
++def shell_path(path):
++    value = Path(path).resolve().as_posix()
++    if os.name == "nt" and len(value) > 2 and value[1] == ":":
++        return "/" + value[0].lower() + value[2:]
++    return value
++
++
++FAKE_DOCKER = r"""#!/bin/sh
++set -eu
++printf '%s|' "$@" >> "$MOCK_DOCKER_LOG"
++printf '\n' >> "$MOCK_DOCKER_LOG"
++if [ "$1" = compose ]; then
++  shift
++  if [ "$1" = version ]; then
++    [ "$MOCK_COMPOSE_OK" = true ] || exit 1
++    printf 'Docker Compose version v2.39.0\n'
++    exit 0
++  fi
++  mode=base
++  while [ "$#" -gt 0 ]; do
++    case "$1" in
++      -f)
++        case "$2" in *docker-compose.gpt-monitor.yml) mode=patch ;; esac
++        shift 2
++        ;;
++      ps)
++        printf '%s\n' "$MOCK_CONTAINER_ID"
++        exit 0
++        ;;
++      config) exit 0 ;;
++      exec)
++        if [ -f "$MOCK_STATE" ] && [ "$(cat "$MOCK_STATE")" = patch ]; then
++          printf 'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1, built: test)\n'
++        else
++          printf 'Sub2API %s (commit: ab80abc, built: test)\n' "$MOCK_VERSION"
++        fi
++        exit 0
++        ;;
++      up)
++        printf '%s' "$mode" > "$MOCK_STATE"
++        exit 0
++        ;;
++      *) exit 17 ;;
++    esac
++  done
++fi
++if [ "$1" = inspect ]; then
++  printf 'sha256:0123456789abcdef\n'
++  exit 0
++fi
++if [ "$1" = image ] && [ "$2" = inspect ]; then
++  printf '%s\n' "$MOCK_PLATFORM"
++  exit 0
++fi
++exit 18
++"""
++
++
++@unittest.skipUnless(BASH, "bash is needed; no Docker daemon is required")
++class DeploymentScriptsTest(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory(prefix="gpt-monitor-tests-")
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name) / "deployment space ' $value"
++        self.root.mkdir()
++        self.bundle = self.root / "gpt-monitor-patch"
++        self.bundle.mkdir()
++        self.fake_bin = self.root / "fake-bin"
++        self.fake_bin.mkdir()
++        (self.root / "docker-compose.yml").write_text("services:\n  custom_api:\n    image: original\n", encoding="utf-8")
++        for name in ("apply.sh", "rollback.sh", "README.md"):
++            shutil.copyfile(HERE / name, self.bundle / name)
++        (self.bundle / "UPSTREAM_BASE.txt").write_text("ab80abc6d1f929a6864c8804fd077b509d21fda2\n", encoding="utf-8")
++        for arch in ("amd64", "arm64"):
++            binary = self.bundle / "bin" / ("linux-" + arch) / "sub2api"
++            binary.parent.mkdir(parents=True)
++            binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
++            binary.chmod(0o755)
++        docker = self.fake_bin / "docker"
++        docker.write_text(FAKE_DOCKER, encoding="utf-8", newline="\n")
++        docker.chmod(0o755)
++        self.log = self.root / "docker.log"
++        self.env = os.environ.copy()
++        self.env.update({
++            "MOCK_DOCKER_LOG": shell_path(self.log),
++            "MOCK_STATE": shell_path(self.root / "state"),
++            "MOCK_COMPOSE_OK": "true",
++            "MOCK_VERSION": "0.2.15",
++            "MOCK_PLATFORM": "linux/amd64",
++            "MOCK_CONTAINER_ID": "a" * 64,
++        })
++        self.write_checksums()
++
++    def write_checksums(self):
++        entries = []
++        for path in sorted(self.bundle.rglob("*")):
++            if path.is_file() and path.name != "SHA256SUMS":
++                entries.append(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.relative_to(self.bundle).as_posix())
++        (self.bundle / "SHA256SUMS").write_text("\n".join(entries) + "\n", encoding="utf-8", newline="\n")
++
++    def run_script(self, name="apply.sh", service="custom_api"):
++        return subprocess.run(
++            [BASH, "-c", 'export PATH="$1:$PATH"; shift; exec sh "$@"', "mock-launch",
++             shell_path(self.fake_bin), shell_path(self.bundle / name), "docker-compose.yml", service],
++            cwd=self.root, env=self.env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
++        )
++
++    def calls(self):
++        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
++
++    def test_apply_preserves_image_and_service_with_quoted_paths(self):
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        override = (self.root / "docker-compose.gpt-monitor.yml").read_text(encoding="utf-8")
++        self.assertIn("'custom_api':", override)
++        self.assertIn("image: 'sha256:0123456789abcdef'", override)
++        self.assertIn("linux-amd64/sub2api", override)
++        self.assertIn("deployment space '' $$value", override)
++        self.assertIn("read_only: true", override)
++        self.assertIn("create_host_path: false", override)
++        up = [line for line in self.calls() if "|up|" in line]
++        self.assertEqual(len(up), 1)
++        self.assertIn("|--no-deps|--force-recreate|--pull|never|--no-build|custom_api|", up[0])
++        self.assertNotIn("|down|", "\n".join(self.calls()))
++
++    def test_arm64_uses_actual_image_architecture(self):
++        self.env["MOCK_PLATFORM"] = "linux/arm64"
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertIn("linux-arm64/sub2api", (self.root / "docker-compose.gpt-monitor.yml").read_text(encoding="utf-8"))
++
++    def test_wrong_version_and_arch_never_recreate(self):
++        for key, value in (("MOCK_VERSION", "0.2.16"), ("MOCK_PLATFORM", "linux/386")):
++            with self.subTest(key=key):
++                original = self.env[key]
++                self.env[key] = value
++                result = self.run_script()
++                self.env[key] = original
++                self.assertNotEqual(result.returncode, 0)
++                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_checksum_failure_stops_before_docker(self):
++        with (self.bundle / "bin/linux-amd64/sub2api").open("a", encoding="utf-8") as file:
++            file.write("tampered")
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertEqual(self.calls(), [])
++
++    def test_existing_override_is_not_overwritten(self):
++        override = self.root / "docker-compose.gpt-monitor.yml"
++        override.write_text("keep this exact file", encoding="utf-8")
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertEqual(override.read_text(encoding="utf-8"), "keep this exact file")
++        self.assertEqual(self.calls(), [])
++
++    def test_multiple_containers_are_rejected(self):
++        self.env["MOCK_CONTAINER_ID"] = "a" * 64 + "\n" + "b" * 64
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_rollback_uses_only_original_compose_and_keeps_override(self):
++        override = self.root / "docker-compose.gpt-monitor.yml"
++        override.write_text("retain for inspection", encoding="utf-8")
++        result = self.run_script("rollback.sh")
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        calls = "\n".join(self.calls())
++        self.assertNotIn("docker-compose.gpt-monitor.yml", calls)
++        self.assertNotIn("|down|", calls)
++        self.assertNotIn("|rm|", calls)
++        self.assertIn("|up|-d|--no-deps|--force-recreate|--pull|never|--no-build|custom_api|", calls)
++        self.assertEqual(override.read_text(encoding="utf-8"), "retain for inspection")
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/frontend/src/api/admin/gptAccountMonitor.ts b/frontend/src/api/admin/gptAccountMonitor.ts
+new file mode 100644
+index 0000000..6d98387
+--- /dev/null
++++ b/frontend/src/api/admin/gptAccountMonitor.ts
+@@ -0,0 +1,52 @@
++import { apiClient } from '../client'
++
++export interface GPTAccountMonitorConfig {
++  enabled: boolean
++  interval_seconds: number
++  timeout_seconds: number
++  concurrency: number
++  model: string
++  prompt: string
++  expected_generation: number
++  account_ids: number[]
++  run_on_start: boolean
++}
++
++export interface GPTAccountMonitorResult {
++  account_id: number
++  name: string
++  proxy_name?: string
++  checked_at: string | null
++  verdict: string
++  answer?: string
++  message: string
++  model: string
++  expected_generation: number
++  schedulable: boolean
++  changed: boolean
++}
++
++export interface GPTAccountMonitorStatus {
++  enabled: boolean
++  running: boolean
++  last_run: string | null
++  next_run: string | null
++  message: string
++  total_accounts: number
++  accounts: GPTAccountMonitorResult[]
++}
++
++const base = '/admin/gpt-account-monitor'
++export async function getConfig(signal?: AbortSignal): Promise<GPTAccountMonitorConfig> {
++  return (await apiClient.get<GPTAccountMonitorConfig>(`${base}/config`, { signal })).data
++}
++export async function saveConfig(config: GPTAccountMonitorConfig, signal?: AbortSignal): Promise<GPTAccountMonitorConfig> {
++  return (await apiClient.put<GPTAccountMonitorConfig>(`${base}/config`, config, { signal })).data
++}
++export async function getStatus(signal?: AbortSignal): Promise<GPTAccountMonitorStatus> {
++  return (await apiClient.get<GPTAccountMonitorStatus>(`${base}/status`, { signal })).data
++}
++export async function run(signal?: AbortSignal): Promise<{ queued: boolean; message: string }> {
++  return (await apiClient.post<{ queued: boolean; message: string }>(`${base}/run`, undefined, { signal })).data
++}
++export default { getConfig, saveConfig, getStatus, run }
+diff --git a/frontend/src/api/admin/index.ts b/frontend/src/api/admin/index.ts
+index 0616449..e7a3537 100644
+--- a/frontend/src/api/admin/index.ts
++++ b/frontend/src/api/admin/index.ts
+@@ -36,6 +36,7 @@ import riskControlAPI from './riskControl'
+ import adminComplianceAPI from './compliance'
+ import auditAPI from './audit'
+ import pluginsAPI from './plugins'
++import gptAccountMonitorAPI from './gptAccountMonitor'
+ 
+ /**
+  * Unified admin API object for convenient access
+@@ -73,7 +74,8 @@ export const adminAPI = {
+   riskControl: riskControlAPI,
+   compliance: adminComplianceAPI,
+   audit: auditAPI,
+-  plugins: pluginsAPI
++  plugins: pluginsAPI,
++  gptAccountMonitor: gptAccountMonitorAPI
+ }
+ 
+ export {
+@@ -109,7 +111,8 @@ export {
+   riskControlAPI,
+   adminComplianceAPI,
+   auditAPI,
+-  pluginsAPI
++  pluginsAPI,
++  gptAccountMonitorAPI
+ }
+ 
+ export default adminAPI
+diff --git a/frontend/src/components/layout/AppSidebar.vue b/frontend/src/components/layout/AppSidebar.vue
+index 1d20fef..31a82a5 100644
+--- a/frontend/src/components/layout/AppSidebar.vue
++++ b/frontend/src/components/layout/AppSidebar.vue
+@@ -793,6 +793,7 @@ const adminNavItems = computed((): NavItem[] => {
+     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
+     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
+     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
++    { path: '/admin/gpt-account-monitor', label: t('nav.gptAccountMonitor'), icon: SignalIcon },
+     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
+     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
+     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
+diff --git a/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
+new file mode 100644
+index 0000000..2775f7c
+--- /dev/null
++++ b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
+@@ -0,0 +1,35 @@
++export default {
++  gptAccountMonitor: {
++    title: 'GPT Account Monitor',
++    description: 'Check OAuth account responses and manage scheduling automatically.',
++    oauthOnly: 'OpenAI OAuth only',
++    proxyRule: 'Each account is checked through its assigned proxy. API Key accounts are excluded.',
++    ruleNotice: 'Matching iPhone generations enable scheduling; nonmatching answers disable it. A later match also restores manually paused scheduling. Proxy, authentication, network, or incomplete-response errors leave scheduling unchanged.',
++    ruleLimit: 'This checks a fixed response rule, not intelligence. The expected generation does not update automatically, and checks provide no web tools.',
++    running: 'Checking', enabled: 'Enabled', disabled: 'Paused',
++    lastRun: 'Last check', nextRun: 'Next check', noTime: 'Not scheduled',
++    normal: 'Matching', abnormal: 'Not matching', error: 'Check errors', skipped: 'Skipped', pending: 'Not checked yet',
++    normalHint: 'Answers match the saved rule', abnormalHint: 'Answers do not match the saved rule', errorHint: 'Scheduling stays unchanged',
++    currentRecords: 'Latest results currently shown',
++    configTitle: 'Monitor settings', configHint: 'Changes apply when saved. Run now uses the saved configuration.',
++    enableSchedule: 'Enable scheduled checks', enableHint: 'Allow checks to enable or disable scheduling for selected accounts.',
++    interval: 'Check interval (seconds)', timeout: 'Account timeout (seconds)', concurrency: 'Concurrent accounts', generation: 'Expected iPhone generation',
++    model: 'Check model', prompt: 'Check prompt', runOnStart: 'Check immediately after server startup',
++    scope: 'Accounts to check', allAccounts: 'All eligible OAuth accounts', selectedAccounts: 'Selected accounts only',
++    scopeHint: 'Only active OpenAI OAuth accounts are listed. Shadow, expired, and API Key accounts are excluded.',
++    accountSearch: 'Search account name or ID', selectedCount: '{count} selected', noAccounts: 'No eligible accounts found',
++    noProxy: 'No assigned proxy', noProxyHint: 'Accounts without a proxy are skipped.', previous: 'Previous', next: 'Next', page: 'Page {page} of {pages}',
++    removeAccount: 'Remove account {id}', accountLoadError: 'Could not load accounts. Saved selections are retained; try again.', retry: 'Retry',
++    save: 'Save settings', saving: 'Saving…', saved: 'Monitor settings saved', reset: 'Discard changes', dirty: 'Unsaved changes',
++    run: 'Run now', runHint: 'Check the selected accounts and apply scheduling changes from the results.', queued: 'Check queued. Results will refresh automatically.',
++    saveFirst: 'Save your changes before running a check.', enableFirst: 'Enable scheduled checks and save first.',
++    chooseAccounts: 'Select at least one OAuth account or choose all accounts.', invalidConfig: 'Check numeric ranges and enter a model and prompt.',
++    records: 'Account check results', recordCount: 'Showing {shown} of {total}; up to 200 latest results',
++    searchResults: 'Search account, ID, answer, or message', allResults: 'All results', refresh: 'Refresh status',
++    account: 'Account / proxy', checkedAt: 'Checked at', verdict: 'Result', scheduling: 'Scheduling', response: 'Answer / message',
++    scheduleOn: 'Enabled', scheduleOff: 'Disabled', changed: 'Changed this check', unchanged: 'Unchanged',
++    noResults: 'No check results yet', noResultsHint: 'Save and enable the monitor, then wait for a scheduled check or select Run now.', noMatches: 'No matching results',
++    statusError: 'Could not refresh status. Displayed results may be outdated.', loading: 'Loading monitor settings…', loadError: 'Could not load monitor settings',
++    localTime: 'Times use your browser’s time zone. Status refreshes every 5 seconds while this page is visible.',
++  }
++}
+diff --git a/frontend/src/i18n/locales/en/admin/index.ts b/frontend/src/i18n/locales/en/admin/index.ts
+index b86114e..bc05f7d 100644
+--- a/frontend/src/i18n/locales/en/admin/index.ts
++++ b/frontend/src/i18n/locales/en/admin/index.ts
+@@ -7,6 +7,7 @@ import settings from './settings'
+ import audit from './audit'
+ import promptAudit from './promptAudit'
+ import plugins from './plugins'
++import gptAccountMonitor from './gptAccountMonitor'
+ 
+ export default {
+   ...overview,
+@@ -18,4 +19,5 @@ export default {
+   ...audit,
+   ...promptAudit,
+   ...plugins,
++  ...gptAccountMonitor,
+ }
+diff --git a/frontend/src/i18n/locales/en/common.ts b/frontend/src/i18n/locales/en/common.ts
+index 694dbb7..5f64f25 100644
+--- a/frontend/src/i18n/locales/en/common.ts
++++ b/frontend/src/i18n/locales/en/common.ts
+@@ -183,6 +183,7 @@ export default {
+     subscriptions: 'Subscriptions',
+     accounts: 'Accounts',
+     plugins: 'Plugins',
++    gptAccountMonitor: 'GPT Account Monitor',
+     proxies: 'Proxies',
+     redeemCodes: 'Redeem Codes',
+     ops: 'Ops',
+diff --git a/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
+new file mode 100644
+index 0000000..7020c96
+--- /dev/null
++++ b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
+@@ -0,0 +1,35 @@
++export default {
++  gptAccountMonitor: {
++    title: 'GPT 账号巡检',
++    description: '定时检查 OAuth 账号回答，并按规则自动管理调度。',
++    oauthOnly: '仅 OpenAI OAuth',
++    proxyRule: '每个账号通过自己绑定的代理检测，API Key 类型账号不处理。',
++    ruleNotice: '回答符合期望 iPhone 代数时开启调度，不符合时关闭；复检正常会恢复手动关闭的调度。代理、认证、网络或响应异常时保留原调度状态。',
++    ruleLimit: '这是固定回答规则，不是智力评分；期望代数不会自动更新，检测不提供联网工具。',
++    running: '巡检中', enabled: '已启用', disabled: '已暂停',
++    lastRun: '上次巡检', nextRun: '下次巡检', noTime: '尚未安排',
++    normal: '符合预期', abnormal: '不符合预期', error: '检查异常', skipped: '已跳过', pending: '尚未检查',
++    normalHint: '回答符合已保存的规则', abnormalHint: '回答未达到已保存的规则', errorHint: '调度保持不变',
++    currentRecords: '当前展示的最新结果',
++    configTitle: '巡检设置', configHint: '保存后立即生效；立即巡检使用已保存配置。',
++    enableSchedule: '启用定时巡检', enableHint: '允许巡检自动开启或关闭所选账号的调度。',
++    interval: '巡检间隔（秒）', timeout: '单账号超时（秒）', concurrency: '并发账号数', generation: '期望 iPhone 代数',
++    model: '检测模型', prompt: '检测问题', runOnStart: '服务启动后立即检查',
++    scope: '巡检账号', allAccounts: '全部符合条件的 OAuth 账号', selectedAccounts: '只检查指定账号',
++    scopeHint: '仅列出正常的 OpenAI OAuth 账号；影子账号、过期账号和 API Key 账号不能加入。',
++    accountSearch: '搜索账号名称或 ID', selectedCount: '已选择 {count} 个', noAccounts: '没有符合条件的账号',
++    noProxy: '未绑定代理', noProxyHint: '缺少代理的账号会跳过检测。', previous: '上一页', next: '下一页', page: '第 {page} / {pages} 页',
++    removeAccount: '移除账号 {id}', accountLoadError: '账号列表加载失败，可重试；已保存的选择仍保留。', retry: '重试',
++    save: '保存设置', saving: '正在保存…', saved: '巡检设置已保存', reset: '还原修改', dirty: '有未保存的修改',
++    run: '立即巡检', runHint: '检查所选账号，并按结果自动修改调度。', queued: '已提交巡检，结果将自动刷新',
++    saveFirst: '请先保存修改，再立即巡检。', enableFirst: '请先启用定时巡检并保存。',
++    chooseAccounts: '请至少选择一个 OAuth 账号，或切换为全部账号。', invalidConfig: '请检查参数范围，并填写模型与检测问题。',
++    records: '账号检测结果', recordCount: '展示 {shown} / {total} 条，最多保留 200 条最新结果',
++    searchResults: '搜索账号、ID、回答或说明', allResults: '全部结果', refresh: '刷新状态',
++    account: '账号 / 代理', checkedAt: '检查时间', verdict: '结果', scheduling: '调度', response: '回答 / 说明',
++    scheduleOn: '开启', scheduleOff: '关闭', changed: '本次已调整', unchanged: '未调整',
++    noResults: '暂无检测结果', noResultsHint: '保存设置并启用后，等待定时巡检或点击立即巡检。', noMatches: '没有匹配的检测结果',
++    statusError: '状态刷新失败，当前结果可能已过时。', loading: '正在加载巡检设置…', loadError: '无法加载巡检设置',
++    localTime: '时间按浏览器本地时区显示；页面可见时每 5 秒刷新。',
++  }
++}
+diff --git a/frontend/src/i18n/locales/zh/admin/index.ts b/frontend/src/i18n/locales/zh/admin/index.ts
+index b86114e..bc05f7d 100644
+--- a/frontend/src/i18n/locales/zh/admin/index.ts
++++ b/frontend/src/i18n/locales/zh/admin/index.ts
+@@ -7,6 +7,7 @@ import settings from './settings'
+ import audit from './audit'
+ import promptAudit from './promptAudit'
+ import plugins from './plugins'
++import gptAccountMonitor from './gptAccountMonitor'
+ 
+ export default {
+   ...overview,
+@@ -18,4 +19,5 @@ export default {
+   ...audit,
+   ...promptAudit,
+   ...plugins,
++  ...gptAccountMonitor,
+ }
+diff --git a/frontend/src/i18n/locales/zh/common.ts b/frontend/src/i18n/locales/zh/common.ts
+index d237724..91fe6d9 100644
+--- a/frontend/src/i18n/locales/zh/common.ts
++++ b/frontend/src/i18n/locales/zh/common.ts
+@@ -183,6 +183,7 @@ export default {
+     subscriptions: '订阅管理',
+     accounts: '账号管理',
+     plugins: '插件管理',
++    gptAccountMonitor: 'GPT 账号巡检',
+     proxies: 'IP管理',
+     redeemCodes: '兑换码',
+     ops: '运维监控',
+diff --git a/frontend/src/router/index.ts b/frontend/src/router/index.ts
+index 1881ff3..f7f8adb 100644
+--- a/frontend/src/router/index.ts
++++ b/frontend/src/router/index.ts
+@@ -525,6 +525,18 @@ const routes: RouteRecordRaw[] = [
+       descriptionKey: 'admin.accounts.description'
+     }
+   },
++  {
++    path: '/admin/gpt-account-monitor',
++    name: 'AdminGPTAccountMonitor',
++    component: () => import('@/views/admin/GPTAccountMonitorView.vue'),
++    meta: {
++      requiresAuth: true,
++      requiresAdmin: true,
++      title: 'GPT Account Monitor',
++      titleKey: 'admin.gptAccountMonitor.title',
++      descriptionKey: 'admin.gptAccountMonitor.description'
++    }
++  },
+   {
+     path: '/admin/plugins',
+     name: 'AdminPlugins',
+diff --git a/frontend/src/views/admin/GPTAccountMonitorView.vue b/frontend/src/views/admin/GPTAccountMonitorView.vue
+new file mode 100644
+index 0000000..650bf40
+--- /dev/null
++++ b/frontend/src/views/admin/GPTAccountMonitorView.vue
+@@ -0,0 +1,308 @@
++<template>
++  <AppLayout>
++    <div class="mx-auto max-w-7xl space-y-6">
++      <header class="flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-dark-700">
++        <div>
++          <div class="mb-2 flex items-center gap-3">
++            <h1 class="text-xl font-semibold text-gray-900 dark:text-white">{{ tr('title') }}</h1>
++            <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="status.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'">
++              {{ tr(status.running ? 'running' : status.enabled ? 'enabled' : 'disabled') }}
++            </span>
++          </div>
++          <p class="text-sm text-gray-500 dark:text-gray-400">{{ tr('description') }}</p>
++        </div>
++        <div class="flex flex-wrap gap-2">
++          <button type="button" class="btn btn-secondary" data-testid="refresh" :disabled="refreshing" @click="refreshStatus">
++            <Icon name="refresh" size="sm" :class="{ 'animate-spin': refreshing }" />{{ tr('refresh') }}
++          </button>
++          <button type="button" class="btn btn-primary" data-testid="run" :disabled="!loaded || busy || status.running || dirty || !savedConfig?.enabled" :title="dirty ? tr('saveFirst') : !savedConfig?.enabled ? tr('enableFirst') : tr('runHint')" @click="runNow">
++            <Icon name="play" size="sm" />{{ tr('run') }}
++          </button>
++        </div>
++      </header>
++
++      <div class="grid gap-4 sm:grid-cols-3">
++        <div v-for="kind in resultKinds" :key="kind" class="card p-5">
++          <div class="flex items-center justify-between">
++            <p class="text-sm text-gray-500 dark:text-gray-400">{{ tr(kind) }}</p>
++            <Icon :name="kind === 'normal' ? 'checkCircle' : kind === 'abnormal' ? 'xCircle' : 'exclamationCircle'" size="lg" :class="kind === 'normal' ? 'text-emerald-500' : kind === 'abnormal' ? 'text-rose-500' : 'text-amber-500'" />
++          </div>
++          <p class="mt-3 text-3xl font-semibold tabular-nums text-gray-900 dark:text-white" :data-testid="`count-${kind}`">{{ counts[kind] }}</p>
++          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tr(`${kind}Hint`) }}</p>
++        </div>
++      </div>
++      <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-gray-500 dark:text-gray-400">
++        <span>{{ tr('lastRun') }}: <span class="text-gray-800 dark:text-gray-200">{{ dateText(status.last_run) }}</span></span>
++        <span>{{ tr('nextRun') }}: <span class="text-gray-800 dark:text-gray-200">{{ dateText(status.next_run) }}</span></span>
++        <span v-if="status.message" role="status">{{ status.message }}</span>
++      </div>
++      <p v-if="statusError" role="alert" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{{ tr('statusError') }} {{ statusError }}</p>
++
++      <section class="card overflow-hidden" aria-labelledby="monitor-config-title">
++        <div class="border-b border-gray-100 px-5 py-4 dark:border-dark-700">
++          <h2 id="monitor-config-title" class="font-semibold text-gray-900 dark:text-white">{{ tr('configTitle') }}</h2>
++          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tr('configHint') }}</p>
++        </div>
++        <div v-if="loading" class="p-8 text-center text-sm text-gray-500">{{ tr('loading') }}</div>
++        <div v-else-if="loadError" class="flex items-center justify-between gap-4 p-5 text-sm text-red-600" role="alert">
++          <span>{{ tr('loadError') }}: {{ loadError }}</span><button type="button" class="btn btn-secondary" @click="loadConfig">{{ tr('retry') }}</button>
++        </div>
++        <form v-else data-testid="config-form" @submit.prevent="save">
++          <fieldset class="space-y-6 p-5" :disabled="busy || !loaded">
++            <div class="flex items-center justify-between gap-4 rounded-xl bg-gray-50 p-4 dark:bg-dark-800">
++              <div><label for="monitor-enabled" class="font-medium text-gray-900 dark:text-white">{{ tr('enableSchedule') }}</label><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tr('enableHint') }}</p></div>
++              <input id="monitor-enabled" v-model="form.enabled" type="checkbox" role="switch" class="h-5 w-5 accent-primary-600" data-testid="enabled" />
++            </div>
++            <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
++              <label class="monitor-label">{{ tr('interval') }}<input v-model.number="form.interval_seconds" class="input mt-2" type="number" min="60" max="86400" step="1" required data-testid="interval" /></label>
++              <label class="monitor-label">{{ tr('timeout') }}<input v-model.number="form.timeout_seconds" class="input mt-2" type="number" min="10" max="300" step="1" required /></label>
++              <label class="monitor-label">{{ tr('concurrency') }}<input v-model.number="form.concurrency" class="input mt-2" type="number" min="1" max="10" step="1" required /></label>
++              <label class="monitor-label">{{ tr('generation') }}<input v-model.number="form.expected_generation" class="input mt-2" type="number" min="1" max="99" step="1" required /></label>
++            </div>
++            <div class="grid gap-5 lg:grid-cols-[1fr_2fr]">
++              <div class="space-y-4">
++                <label class="monitor-label">{{ tr('model') }}<input v-model="form.model" class="input mt-2" type="text" maxlength="200" required data-testid="model" /></label>
++                <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><input v-model="form.run_on_start" type="checkbox" class="accent-primary-600" />{{ tr('runOnStart') }}</label>
++              </div>
++              <label class="monitor-label">{{ tr('prompt') }}<textarea v-model="form.prompt" class="input mt-2 min-h-28 resize-y" rows="3" maxlength="8000" required data-testid="prompt" /></label>
++            </div>
++            <div class="space-y-3">
++              <div class="flex flex-wrap items-center justify-between gap-3"><h3 class="monitor-label">{{ tr('scope') }}</h3><span class="rounded-full bg-primary-50 px-2 py-1 text-xs text-primary-700 dark:bg-primary-900/20 dark:text-primary-300">{{ tr('oauthOnly') }}</span></div>
++              <div class="flex flex-wrap gap-5 text-sm text-gray-700 dark:text-gray-300">
++                <label class="flex items-center gap-2"><input v-model="scope" type="radio" value="all" name="monitor-scope" class="accent-primary-600" data-testid="scope-all" />{{ tr('allAccounts') }}</label>
++                <label class="flex items-center gap-2"><input v-model="scope" type="radio" value="selected" name="monitor-scope" class="accent-primary-600" data-testid="scope-selected" />{{ tr('selectedAccounts') }}</label>
++              </div>
++              <p class="text-xs text-gray-500 dark:text-gray-400">{{ tr('scopeHint') }}</p>
++              <div v-if="scope === 'selected'" class="rounded-lg border border-gray-200 dark:border-dark-600">
++                <div class="space-y-3 border-b border-gray-100 p-3 dark:border-dark-700">
++                  <label class="sr-only" for="account-search">{{ tr('accountSearch') }}</label>
++                  <input id="account-search" v-model="accountSearch" type="search" class="input" :placeholder="tr('accountSearch')" />
++                  <div class="flex flex-wrap items-center gap-2">
++                    <span class="text-xs text-gray-500">{{ tr('selectedCount', { count: form.account_ids.length }) }}</span>
++                    <button v-for="id in form.account_ids" :key="id" type="button" class="inline-flex items-center gap-1 rounded-md bg-primary-50 px-2 py-1 text-xs text-primary-700 dark:bg-primary-900/20 dark:text-primary-300" :aria-label="tr('removeAccount', { id })" @click="toggleAccount(id)">{{ accountNames[id] || `#${id}` }}<Icon name="x" size="xs" /></button>
++                  </div>
++                </div>
++                <div v-if="accountError" class="flex justify-between gap-3 p-3 text-sm text-red-600" role="alert"><span>{{ tr('accountLoadError') }}</span><button type="button" class="underline" @click="loadAccounts">{{ tr('retry') }}</button></div>
++                <div v-else class="max-h-64 overflow-y-auto" :aria-busy="accountsLoading">
++                  <label v-for="account in accountOptions" :key="account.id" class="flex cursor-pointer items-center gap-3 border-b border-gray-50 px-4 py-3 text-sm last:border-0 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-800" :data-testid="`account-option-${account.id}`">
++                    <input type="checkbox" :checked="form.account_ids.includes(account.id)" class="accent-primary-600" @change="toggleAccount(account.id)" />
++                    <span class="min-w-0 flex-1 truncate text-gray-800 dark:text-gray-200">{{ account.name }} <span class="text-xs text-gray-400">#{{ account.id }}</span></span>
++                    <span class="text-xs" :class="account.proxy_id ? 'text-gray-500' : 'text-amber-600'">{{ account.proxy?.name || (account.proxy_id ? `#${account.proxy_id}` : tr('noProxy')) }}</span>
++                  </label>
++                  <p v-if="!accountOptions.length && !accountsLoading" class="p-6 text-center text-sm text-gray-500">{{ tr('noAccounts') }}</p>
++                </div>
++                <div class="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-2 text-xs dark:border-dark-700">
++                  <span class="text-gray-500">{{ tr('page', { page: accountPage, pages: accountPages }) }}</span>
++                  <div class="flex gap-2"><button type="button" class="btn btn-secondary btn-sm" :disabled="accountsLoading || accountPage <= 1" @click="changeAccountPage(-1)">{{ tr('previous') }}</button><button type="button" class="btn btn-secondary btn-sm" :disabled="accountsLoading || accountPage >= accountPages" @click="changeAccountPage(1)">{{ tr('next') }}</button></div>
++                </div>
++              </div>
++            </div>
++            <div class="rounded-lg bg-blue-50 p-4 text-xs leading-relaxed text-blue-800 dark:bg-blue-900/20 dark:text-blue-200"><p class="font-medium">{{ tr('proxyRule') }}</p><p class="mt-1">{{ tr('ruleNotice') }}</p><p class="mt-1 text-blue-700 dark:text-blue-300">{{ tr('ruleLimit') }}</p></div>
++          </fieldset>
++          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/50 px-5 py-4 dark:border-dark-700 dark:bg-dark-800/50">
++            <span class="text-xs text-amber-600 dark:text-amber-400" role="status">{{ dirty ? tr('dirty') : '' }}</span>
++            <div class="flex gap-2"><button type="button" class="btn btn-secondary" :disabled="busy || !dirty" @click="resetForm">{{ tr('reset') }}</button><button type="submit" class="btn btn-primary" :disabled="busy || !loaded" data-testid="save">{{ tr(saving ? 'saving' : 'save') }}</button></div>
++          </div>
++        </form>
++      </section>
++
++      <section class="card overflow-hidden" aria-labelledby="monitor-results-title">
++        <div class="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 p-5 dark:border-dark-700">
++          <div><h2 id="monitor-results-title" class="font-semibold text-gray-900 dark:text-white">{{ tr('records') }}</h2><p class="mt-1 text-xs text-gray-500">{{ tr('recordCount', { shown: filteredResults.length, total: status.total_accounts }) }}</p></div>
++          <div class="flex w-full gap-2 sm:w-auto">
++            <label class="sr-only" for="result-search">{{ tr('searchResults') }}</label><input id="result-search" v-model="resultSearch" class="input min-w-0 sm:w-60" type="search" :placeholder="tr('searchResults')" data-testid="result-search" />
++            <label class="sr-only" for="result-filter">{{ tr('verdict') }}</label><select id="result-filter" v-model="verdictFilter" class="input w-auto" data-testid="verdict-filter"><option value="all">{{ tr('allResults') }}</option><option v-for="kind in resultKinds" :key="kind" :value="kind">{{ tr(kind) }}</option><option value="pending">{{ tr('pending') }}</option></select>
++          </div>
++        </div>
++        <div class="overflow-x-auto">
++          <table class="w-full text-left text-sm">
++            <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800 dark:text-gray-400"><tr><th class="px-5 py-3">{{ tr('account') }}</th><th class="px-4 py-3">{{ tr('checkedAt') }}</th><th class="px-4 py-3">{{ tr('verdict') }}</th><th class="px-4 py-3">{{ tr('scheduling') }}</th><th class="px-5 py-3">{{ tr('response') }}</th></tr></thead>
++            <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
++              <tr v-for="account in filteredResults" :key="account.account_id" class="align-top" data-testid="result-row">
++                <td class="min-w-36 px-5 py-4"><p class="font-medium text-gray-900 dark:text-gray-100">{{ account.name || `#${account.account_id}` }}</p><p class="mt-1 text-xs text-gray-500">#{{ account.account_id }} · {{ account.proxy_name || '—' }}</p></td>
++                <td class="whitespace-nowrap px-4 py-4 text-xs text-gray-500">{{ dateText(account.checked_at) }}</td>
++                <td class="whitespace-nowrap px-4 py-4"><span class="rounded-full px-2 py-1 text-xs font-medium" :class="verdictClass(account.verdict)">{{ tr(verdictKind(account.verdict)) }}</span></td>
++                <td class="whitespace-nowrap px-4 py-4"><p :class="account.schedulable ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'">{{ tr(account.schedulable ? 'scheduleOn' : 'scheduleOff') }}</p><p class="mt-1 text-xs text-gray-400">{{ tr(account.changed ? 'changed' : 'unchanged') }}</p></td>
++                <td class="min-w-64 max-w-lg px-5 py-4"><p class="whitespace-pre-wrap break-words text-gray-800 dark:text-gray-200" data-testid="answer">{{ account.answer || '—' }}</p><p class="mt-2 break-words text-xs text-gray-500">{{ account.message }}</p><p class="mt-1 text-xs text-gray-400">{{ account.model }} · iPhone {{ account.expected_generation }}</p></td>
++              </tr>
++              <tr v-if="!filteredResults.length"><td colspan="5" class="p-10 text-center"><Icon name="clock" size="xl" class="mx-auto mb-3 text-gray-300" /><p class="text-sm text-gray-600 dark:text-gray-300">{{ tr(status.accounts.length ? 'noMatches' : 'noResults') }}</p><p v-if="!status.accounts.length" class="mt-2 text-xs text-gray-400">{{ tr('noResultsHint') }}</p></td></tr>
++            </tbody>
++          </table>
++        </div>
++      </section>
++      <p class="text-xs text-gray-400">{{ tr('localTime') }} {{ tr('currentRecords') }}</p>
++    </div>
++    <TotpStepUpDialog :controller="stepUp" />
++  </AppLayout>
++</template>
++
++<script setup lang="ts">
++import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
++import { useI18n } from 'vue-i18n'
++import { adminAPI } from '@/api/admin'
++import type { GPTAccountMonitorConfig, GPTAccountMonitorStatus } from '@/api/admin/gptAccountMonitor'
++import type { AccountListItem } from '@/types'
++import { useAppStore } from '@/stores'
++import AppLayout from '@/components/layout/AppLayout.vue'
++import Icon from '@/components/icons/Icon.vue'
++import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
++import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
++
++const { t } = useI18n()
++const tr = (key: string, values: Record<string, string | number> = {}) => t(`admin.gptAccountMonitor.${key}`, values)
++const appStore = useAppStore()
++const stepUp = useStepUp()
++const form = reactive<GPTAccountMonitorConfig>({ enabled: false, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: 'gpt-5.4', prompt: '', expected_generation: 17, account_ids: [], run_on_start: true })
++const savedConfig = ref<GPTAccountMonitorConfig | null>(null)
++const scope = ref<'all' | 'selected'>('all')
++const status = ref<GPTAccountMonitorStatus>({ enabled: false, running: false, last_run: null, next_run: null, message: '', total_accounts: 0, accounts: [] })
++const loading = ref(true), loaded = ref(false), saving = ref(false), running = ref(false), refreshing = ref(false)
++const loadError = ref(''), statusError = ref(''), accountError = ref('')
++const busy = computed(() => saving.value || running.value)
++const resultKinds = ['normal', 'abnormal', 'error'] as const
++const resultSearch = ref(''), verdictFilter = ref('all')
++const accountSearch = ref(''), accountPage = ref(1), accountPages = ref(1), accountsLoading = ref(false)
++const accountOptions = ref<AccountListItem[]>([])
++const accountNames = reactive<Record<number, string>>({})
++const controllers = new Set<AbortController>()
++let stopped = false, pollTimer: ReturnType<typeof setInterval> | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined
++let accountController: AbortController | undefined
++
++function snapshot(): GPTAccountMonitorConfig {
++  return { ...form, model: form.model.trim(), prompt: form.prompt.trim(), account_ids: scope.value === 'all' ? [] : [...new Set(form.account_ids)].sort((a, b) => a - b) }
++}
++function configFingerprint(config: GPTAccountMonitorConfig) {
++  return JSON.stringify([config.enabled, config.interval_seconds, config.timeout_seconds, config.concurrency, config.model, config.prompt, config.expected_generation, [...config.account_ids].sort((a, b) => a - b), config.run_on_start])
++}
++const dirty = computed(() => savedConfig.value !== null && (configFingerprint(snapshot()) !== configFingerprint(savedConfig.value) || scope.value !== (savedConfig.value.account_ids.length ? 'selected' : 'all')))
++function applyConfig(value: GPTAccountMonitorConfig) {
++  const normalized = { ...value, account_ids: [...(value.account_ids || [])].sort((a, b) => a - b) }
++  Object.assign(form, normalized, { account_ids: [...normalized.account_ids] })
++  scope.value = normalized.account_ids.length ? 'selected' : 'all'
++  savedConfig.value = JSON.parse(JSON.stringify(normalized)) as GPTAccountMonitorConfig
++}
++function resetForm() { if (savedConfig.value) applyConfig(savedConfig.value) }
++function message(error: unknown): string { return error && typeof error === 'object' && 'message' in error ? String(error.message) : t('common.unknownError') }
++function report(error: unknown) {
++  if (stopped || isStepUpCancelled(error)) return
++  appStore.showError(isStepUpBlocked(error) ? t(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? 'stepUp.adminApiKeyForbidden' : 'stepUp.notEnabled') : message(error))
++}
++async function request<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
++  const controller = new AbortController()
++  controllers.add(controller)
++  try { return await action(controller.signal) } finally { controllers.delete(controller) }
++}
++async function loadConfig() {
++  if (stopped) return
++  loading.value = true
++  loadError.value = ''
++  try {
++    const value = await request(signal => adminAPI.gptAccountMonitor.getConfig(signal))
++    if (!stopped) { applyConfig(value); loaded.value = true }
++  } catch (error) { if (!stopped) loadError.value = message(error) }
++  finally { loading.value = false }
++}
++async function refreshStatus() {
++  if (stopped || refreshing.value) return
++  refreshing.value = true
++  try {
++    const value = await request(signal => adminAPI.gptAccountMonitor.getStatus(signal))
++    if (!stopped) { status.value = { ...value, accounts: Array.isArray(value.accounts) ? value.accounts : [] }; statusError.value = '' }
++  } catch (error) { if (!stopped) statusError.value = message(error) }
++  finally { refreshing.value = false }
++}
++function validate(config: GPTAccountMonitorConfig) {
++  for (const [value, min, max] of [[config.interval_seconds, 60, 86400], [config.timeout_seconds, 10, 300], [config.concurrency, 1, 10], [config.expected_generation, 1, 99]]) {
++    if (!Number.isInteger(value) || value < min || value > max) throw new Error(tr('invalidConfig'))
++  }
++  if (!config.model || !config.prompt) throw new Error(tr('invalidConfig'))
++  if (scope.value === 'selected' && !config.account_ids.length) throw new Error(tr('chooseAccounts'))
++}
++async function save() {
++  if (!loaded.value || busy.value || stopped) return
++  saving.value = true
++  try {
++    const config = snapshot()
++    validate(config)
++    const value = await stepUp.run(() => request(signal => adminAPI.gptAccountMonitor.saveConfig(config, signal)))
++    if (!stopped) { applyConfig(value); appStore.showSuccess(tr('saved')); await refreshStatus() }
++  } catch (error) { report(error) }
++  finally { saving.value = false }
++}
++async function runNow() {
++  if (!loaded.value || busy.value || status.value.running || stopped) return
++  if (dirty.value) { appStore.showError(tr('saveFirst')); return }
++  if (!savedConfig.value?.enabled) { appStore.showError(tr('enableFirst')); return }
++  running.value = true
++  try {
++    const result = await stepUp.run(() => request(signal => adminAPI.gptAccountMonitor.run(signal)))
++    if (!stopped) {
++      if (result.queued) appStore.showSuccess(result.message || tr('queued'))
++      else appStore.showInfo(result.message || tr('running'))
++      await refreshStatus()
++    }
++  } catch (error) { report(error) }
++  finally { running.value = false }
++}
++async function loadAccounts() {
++  if (stopped) return
++  accountController?.abort()
++  const controller = new AbortController()
++  accountController = controller
++  controllers.add(controller)
++  accountsLoading.value = true
++  accountError.value = ''
++  try {
++    const result = await adminAPI.accounts.list(accountPage.value, 50, { platform: 'openai', type: 'oauth', status: 'active', lite: 'true', search: accountSearch.value.trim() }, { signal: controller.signal })
++    if (stopped || controller.signal.aborted) return
++    accountOptions.value = result.items.filter(account => account.platform === 'openai' && account.type === 'oauth' && account.status === 'active' && !account.parent_account_id && (!account.expires_at || account.expires_at * 1000 > Date.now()))
++    for (const account of accountOptions.value) accountNames[account.id] = `${account.name} (#${account.id})`
++    accountPages.value = Math.max(1, result.pages || Math.ceil(result.total / 50))
++  } catch (error) { if (!stopped && !controller.signal.aborted) accountError.value = message(error) }
++  finally { controllers.delete(controller); if (accountController === controller) accountsLoading.value = false }
++}
++function toggleAccount(id: number) { form.account_ids = form.account_ids.includes(id) ? form.account_ids.filter(value => value !== id) : [...form.account_ids, id] }
++function changeAccountPage(delta: number) { accountPage.value += delta; void loadAccounts() }
++watch(accountSearch, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { accountPage.value = 1; void loadAccounts() }, 250) })
++function verdictKind(verdict: string): typeof resultKinds[number] | 'pending' { return verdict === 'pending' ? 'pending' : verdict === 'normal' || verdict === 'pass' ? 'normal' : verdict === 'abnormal' || verdict === 'fail' ? 'abnormal' : 'error' }
++const counts = computed(() => {
++  const value = { normal: 0, abnormal: 0, error: 0 }
++  for (const account of status.value.accounts) {
++    const kind = verdictKind(account.verdict)
++    if (kind !== 'pending') value[kind]++
++  }
++  return value
++})
++const filteredResults = computed(() => {
++  const search = resultSearch.value.trim().toLowerCase()
++  return status.value.accounts.filter(account => (verdictFilter.value === 'all' || verdictKind(account.verdict) === verdictFilter.value) && (!search || `${account.account_id} ${account.name} ${account.answer || ''} ${account.message}`.toLowerCase().includes(search)))
++})
++function verdictClass(verdict: string) {
++  if (verdictKind(verdict) === 'pending') return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
++  return verdictKind(verdict) === 'normal' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300' : verdictKind(verdict) === 'abnormal' ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
++}
++function dateText(value: string | null) {
++  if (!value || value.startsWith('0001-')) return tr('noTime')
++  const date = new Date(value)
++  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
++}
++function onVisibilityChange() { if (!document.hidden) void refreshStatus() }
++onMounted(() => {
++  void Promise.allSettled([loadConfig(), refreshStatus(), loadAccounts()])
++  pollTimer = setInterval(() => { if (!document.hidden) void refreshStatus() }, 5000)
++  document.addEventListener('visibilitychange', onVisibilityChange)
++})
++onUnmounted(() => {
++  stopped = true
++  clearInterval(pollTimer)
++  clearTimeout(searchTimer)
++  document.removeEventListener('visibilitychange', onVisibilityChange)
++  for (const controller of controllers) controller.abort()
++  controllers.clear()
++  stepUp.onCancel()
++})
++</script>
++
++<style scoped>
++.monitor-label { @apply block text-sm font-medium text-gray-700 dark:text-gray-200; }
++</style>
+diff --git a/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
+new file mode 100644
+index 0000000..5f47b13
+--- /dev/null
++++ b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
+@@ -0,0 +1,169 @@
++import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import GPTAccountMonitorView from '../GPTAccountMonitorView.vue'
++import type { GPTAccountMonitorConfig, GPTAccountMonitorStatus } from '@/api/admin/gptAccountMonitor'
++
++enableAutoUnmount(afterEach)
++const { getConfig, saveConfig, getStatus, run, listAccounts, showError, showSuccess, stepUpRun, onCancel } = vi.hoisted(() => ({
++  getConfig: vi.fn(), saveConfig: vi.fn(), getStatus: vi.fn(), run: vi.fn(), listAccounts: vi.fn(),
++  showError: vi.fn(), showSuccess: vi.fn(), stepUpRun: vi.fn((action: () => Promise<unknown>) => action()), onCancel: vi.fn(),
++}))
++vi.mock('@/api/admin', () => ({ adminAPI: { gptAccountMonitor: { getConfig, saveConfig, getStatus, run }, accounts: { list: listAccounts } } }))
++vi.mock('@/stores', () => ({ useAppStore: () => ({ showError, showSuccess, showInfo: vi.fn() }) }))
++vi.mock('vue-i18n', async (importOriginal) => ({
++  ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string) => key }),
++}))
++vi.mock('@/composables/useStepUp', () => ({
++  useStepUp: () => ({ run: stepUpRun, onCancel }), isStepUpCancelled: () => false, isStepUpBlocked: () => false, stepUpBlockReason: () => '',
++}))
++
++const config: GPTAccountMonitorConfig = { enabled: true, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: 'gpt-5.4', prompt: '不联网，不猜测，直接说出你知道的最新苹果手机。', expected_generation: 17, account_ids: [], run_on_start: true }
++const hostile = '<img src=x onerror=alert(1)>'
++const status: GPTAccountMonitorStatus = { enabled: true, running: false, last_run: '2026-10-13T06:00:00Z', next_run: '2026-10-13T06:30:00Z', message: '', total_accounts: 3, accounts: [
++  { account_id: 7, name: 'OAuth primary', proxy_name: 'Proxy A', checked_at: '2026-10-13T06:00:00Z', verdict: 'normal', answer: 'iPhone 17 Pro', message: '回答符合规则', model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: true },
++  { account_id: 8, name: 'OAuth other', proxy_name: 'Proxy B', checked_at: '2026-10-13T06:00:00Z', verdict: 'abnormal', answer: hostile, message: '回答不符合规则', model: 'gpt-5.4', expected_generation: 17, schedulable: false, changed: true },
++  { account_id: 9, name: 'Proxy error', checked_at: null, verdict: 'error', message: '代理异常', model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: false },
++] }
++function mountView() {
++  return mount(GPTAccountMonitorView, { global: {
++    stubs: { AppLayout: { template: '<div><slot /></div>' }, Icon: true, TotpStepUpDialog: true },
++  } })
++}
++beforeEach(() => {
++  vi.clearAllMocks()
++  getConfig.mockResolvedValue({ ...config, account_ids: [] })
++  getStatus.mockResolvedValue(status)
++  saveConfig.mockImplementation(async (value: GPTAccountMonitorConfig) => ({ ...value }))
++  run.mockResolvedValue({ queued: true, message: '已提交巡检' })
++  stepUpRun.mockImplementation((action: () => Promise<unknown>) => action())
++  listAccounts.mockResolvedValue({ page: 1, pages: 1, page_size: 50, total: 5, items: [
++    { id: 7, name: 'OAuth primary', platform: 'openai', type: 'oauth', status: 'active', proxy_id: 1, proxy: { name: 'Proxy A' } },
++    { id: 8, name: 'API Key secret', platform: 'openai', type: 'apikey', status: 'active', proxy_id: 1 },
++    { id: 9, name: 'Other platform', platform: 'anthropic', type: 'oauth', status: 'active' },
++    { id: 10, name: 'Shadow account', platform: 'openai', type: 'oauth', status: 'active', parent_account_id: 7 },
++    { id: 11, name: 'Expired account', platform: 'openai', type: 'oauth', status: 'active', expires_at: 1 },
++  ] })
++})
++afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
++
++describe('GPT account monitor management', () => {
++  it('loads without mutations and only offers eligible OpenAI OAuth accounts', async () => {
++    const wrapper = mountView()
++    await flushPromises()
++    expect(saveConfig).not.toHaveBeenCalled()
++    expect(run).not.toHaveBeenCalled()
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeUndefined()
++    await wrapper.get('[data-testid=scope-selected]').setValue(true)
++    expect(wrapper.find('[data-testid=account-option-7]').exists()).toBe(true)
++    for (const id of [8, 9, 10, 11]) expect(wrapper.find(`[data-testid=account-option-${id}]`).exists()).toBe(false)
++    expect(listAccounts).toHaveBeenCalledWith(1, 50, expect.objectContaining({ platform: 'openai', type: 'oauth', status: 'active' }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
++  })
++
++  it('validates selected scope, guards dirty runs, and saves through step-up', async () => {
++    const wrapper = mountView()
++    await flushPromises()
++    await wrapper.get('[data-testid=scope-selected]').setValue(true)
++    await wrapper.get('[data-testid=config-form]').trigger('submit')
++    expect(showError).toHaveBeenCalledWith('admin.gptAccountMonitor.chooseAccounts')
++    expect(saveConfig).not.toHaveBeenCalled()
++    await wrapper.get('[data-testid=account-option-7] input').setValue(true)
++    await wrapper.get('[data-testid=interval]').setValue('3600')
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeDefined()
++    await wrapper.get('[data-testid=run]').trigger('click')
++    expect(run).not.toHaveBeenCalled()
++    await wrapper.get('[data-testid=config-form]').trigger('submit')
++    await flushPromises()
++    expect(stepUpRun).toHaveBeenCalledTimes(1)
++    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ interval_seconds: 3600, account_ids: [7] }), expect.any(AbortSignal))
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeUndefined()
++    expect(showSuccess).toHaveBeenCalledWith('admin.gptAccountMonitor.saved')
++    getConfig.mockResolvedValue(saveConfig.mock.calls[0][0])
++    const reloaded = mountView()
++    await flushPromises()
++    expect((reloaded.get('[data-testid=interval]').element as HTMLInputElement).value).toBe('3600')
++    expect((reloaded.get('[data-testid=scope-selected]').element as HTMLInputElement).checked).toBe(true)
++  })
++
++  it('runs only the saved configuration and refreshes status', async () => {
++    // Deliberately reverse JSON key order: key order must not mark the form dirty.
++    getConfig.mockResolvedValue(Object.fromEntries(Object.entries(config).reverse()))
++    const wrapper = mountView()
++    await flushPromises()
++    await wrapper.get('[data-testid=run]').trigger('click')
++    await flushPromises()
++    expect(run).toHaveBeenCalledWith(expect.any(AbortSignal))
++    expect(stepUpRun).toHaveBeenCalledTimes(1)
++    expect(saveConfig).not.toHaveBeenCalled()
++    expect(getStatus).toHaveBeenCalledTimes(2)
++  })
++
++  it('renders untrusted answers as text and filters the result table', async () => {
++    const wrapper = mountView()
++    await flushPromises()
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(3)
++    expect(wrapper.find('img').exists()).toBe(false)
++    expect(wrapper.text()).toContain(hostile)
++    expect(wrapper.get('[data-testid=count-normal]').text()).toBe('1')
++    expect(wrapper.get('[data-testid=count-abnormal]').text()).toBe('1')
++    expect(wrapper.get('[data-testid=count-error]').text()).toBe('1')
++    await wrapper.get('[data-testid=verdict-filter]').setValue('abnormal')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++    await wrapper.get('[data-testid=result-search]').setValue('no matching account')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(0)
++    await wrapper.get('[data-testid=verdict-filter]').setValue('all')
++    await wrapper.get('[data-testid=result-search]').setValue('17 Pro')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++    expect(wrapper.get('[data-testid=answer]').text()).toBe('iPhone 17 Pro')
++  })
++
++  it('polls read-only while visible and aborts pending reads on unmount', async () => {
++    vi.useFakeTimers()
++    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
++    const wrapper = mountView()
++    await flushPromises()
++    await vi.advanceTimersByTimeAsync(5000)
++    expect(getStatus).toHaveBeenCalledTimes(2)
++    hidden.mockReturnValue(true)
++    await vi.advanceTimersByTimeAsync(10000)
++    expect(getStatus).toHaveBeenCalledTimes(2)
++    hidden.mockReturnValue(false)
++    getStatus.mockImplementationOnce(() => new Promise(() => {}))
++    await vi.advanceTimersByTimeAsync(5000)
++    const signal = getStatus.mock.calls.at(-1)![0] as AbortSignal
++    expect(signal.aborted).toBe(false)
++    wrapper.unmount()
++    expect(signal.aborted).toBe(true)
++    await vi.advanceTimersByTimeAsync(10000)
++    expect(getStatus).toHaveBeenCalledTimes(3)
++    expect(run).not.toHaveBeenCalled()
++    expect(saveConfig).not.toHaveBeenCalled()
++    expect(onCancel).toHaveBeenCalled()
++  })
++
++  it('keeps never-checked accounts neutral and excludes them from completed counts', async () => {
++    getStatus.mockResolvedValue({ ...status, accounts: [{ ...status.accounts[0], verdict: 'pending', checked_at: '0001-01-01T00:00:00Z', answer: '', message: '尚未检查', changed: false }] })
++    const wrapper = mountView()
++    await flushPromises()
++    for (const kind of ['normal', 'abnormal', 'error']) expect(wrapper.get(`[data-testid=count-${kind}]`).text()).toBe('0')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++    const badge = wrapper.get('[data-testid=result-row]').findAll('span').find(item => item.text() === 'admin.gptAccountMonitor.pending')!
++    expect(badge.classes()).toContain('bg-gray-100')
++    await wrapper.get('[data-testid=verdict-filter]').setValue('error')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(0)
++    await wrapper.get('[data-testid=verdict-filter]').setValue('pending')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++  })
++
++  it('keeps run unavailable when configuration cannot load or is disabled', async () => {
++    getConfig.mockRejectedValueOnce(new Error('configuration unavailable'))
++    const wrapper = mountView()
++    await flushPromises()
++    expect(wrapper.text()).toContain('configuration unavailable')
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeDefined()
++    getConfig.mockResolvedValue({ ...config, enabled: false })
++    const disabled = mountView()
++    await flushPromises()
++    expect(disabled.get('[data-testid=run]').attributes('disabled')).toBeDefined()
++    expect(run).not.toHaveBeenCalled()
++  })
++})

@@ -1,0 +1,6 @@
+*.tar.gz
+*.zip
+*.exe
+*.private
+.env
+bin/
