@@ -1,6 +1,9 @@
-*.tar.gz
-*.zip
-*.exe
-*.private
-.env
-bin/
+/源码/
+/release/
+/待删除/
+/.tools/
+/.publish/
+/清理记录.json
+__pycache__/
+*.py[cod]
+.pytest_cache/

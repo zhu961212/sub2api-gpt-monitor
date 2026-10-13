@@ -1,16 +1,29 @@
-Sub2API 0.2.16 built-in monitor fix v2; 2026-10-13.
-Build marker: 0184257-gpt-monitor-v2. Exact baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
-All 4322 files of the user-supplied sub2api-0.2.16.zip match the official baseline.
-No migration or Ent schema changes. Original model=gpt-6-astra and reasoning.effort=xhigh retained.
-Probe uses account proxy and official pooled OpenAI transport policy with redirects disabled.
-Errors carry sanitized category, HTTP status and duration. Failed requests preserve scheduling.
-Token refresh/usage timestamps do not invalidate completed probes; scheduling writes only change schedulable.
-Backend targeted monitor config/service/repository/handler regressions passed.
-Service startup/cleanup, shared transport privacy and proxy isolation regressions passed.
-Frontend: 12 UI/i18n tests, TypeScript build check and fresh Vite production build passed.
-Deployment updater: 18 fake-Docker tests passed; 2 Windows-specific permission tests skipped.
-Updater shell syntax checked. No actual Docker daemon or PostgreSQL integration exercised.
-Both Linux binaries embed the rebuilt frontend; ELF architecture/build flags verified.
-Source patch applies to the baseline in an isolated Git index; TAR hashes and source ZIP verified.
-No server deployment, real OAuth account, real proxy or database was contacted.
-Actual upstream failure causes and restored connectivity require post-installation rechecking.
+Sub2API 0.2.16 intelligence check and scheduling patch; 2026-10-13, Asia/Shanghai.
+Official baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
+Version: 0.2.16; marker: 0184257-gpt-monitor-patch. Linux amd64 and arm64 only.
+
+Cleanup removed the obsolete answer matcher and moved test-only wrappers out of production.
+Single-account/automatic scheduling, two confirmations, proxy isolation and scheduling CAS remain covered.
+
+Backend passed:
+go test ./internal/service -run 'GPTMonitor|GPTAccountMonitor' -count=1
+go test ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTMonitor|GPTAccountMonitor|ProvideCleanup' -count=1
+gofmt and git diff --check
+
+Frontend: 72 tests in 7 relevant API/composable/dialog/account/monitor/i18n files passed.
+vue-tsc --noEmit and Vite production build passed; backend/internal/web/dist refreshed.
+Existing Vite warnings concern Browserslist data, mixed imports and chunk size.
+An incidental pnpm workspace file was removed and the unchanged lockfile restored.
+
+Linux cross-build: CGO_ENABLED=0, -tags embed, -trimpath, stripped release build.
+Package verifies ELF64 architecture and generates SHA256 manifests.
+Patch export verifies exact-baseline application and resulting-tree equality in isolated indexes.
+Source Git metadata is independent; prior HEAD, index, status and diff were verified unchanged.
+
+Unified installer fake-Docker smoke: 8/8 passed; final directory-name smoke: 1/1 passed.
+All four final shell scripts passed syntax and LF checks.
+Additional fake-Docker checks passed: old poll upgrade; status/logs/start; rollback; restart after rollback; altered old configuration rejection; unknown/current marker rejection; restore on wrong installed marker.
+No real Docker daemon was used.
+
+No real OAuth/upstream account, user proxy, PostgreSQL database or server was contacted.
+Production account permissions and runtime network behavior require installation-time verification.

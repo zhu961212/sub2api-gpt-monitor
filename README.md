@@ -1,36 +1,47 @@
-# Sub2API 0.2.16 · GPT 账号巡检修复版 v2
+# Sub2API 0.2.16 智商检测与账号调度补丁
 
-基于官方 0.2.16（`01842576b3d5c1e2545b5a99ad555d36e28ed306`），新构建标记为 `0184257-gpt-monitor-v2`。此次更新用于已安装 `0184257-gpt-monitor` 的部署。
+在官方 Sub2API 上增加单号智商检测、定时巡检和账号调度开关。只发布 Linux 程序，包含 amd64、arm64 两种架构，安装时自动选择。
 
-每个账号使用自己绑定的代理，固定 **gpt-6-astra / XHigh** 检测：完整回答符合已保存规则时开启调度，不符合时关闭；连接、认证、模型或响应失败保持原调度。后续复检符合规则可自动恢复。
+- 账号行尾点击“智商测试”，单独检测并调整该账号调度。
+- 自动巡检按到期时间逐个执行，检测结束后间隔 5 秒。
+- 需要改变调度时，约 5 分钟后复测；两次有效结果一致才关闭或恢复。
+- 使用账号绑定代理；含糊回答、网络、认证或代理失败时保持原调度。
 
-## 本次修复
+检测固定使用 `gpt-6-astra / XHigh`，按后台配置的期望 iPhone 代数判定。
 
-- 巡检复用官方 OpenAI 连接池及 HTTP/2 代理兼容策略，检测超时按配置生效。
-- 页面和日志显示具体安全错误分类、HTTP 状态及耗时，避免所有错误都显示通用“网络、认证、代理”提示。
-- 正常令牌刷新、使用记录更新或代理改名不再阻止调度切换；使用最新已保存的有效令牌处理旧缓存。
-- 调度写入只更新 `schedulable` 开关；数据库写入失败单独提示。
-- 修正安装包控制文件换行，校验清单和基线记录在 Linux 上使用 LF。
+## Linux 服务器更新
 
-## 下载与更新
+支持精确官方 0.2.16，以及对应巡检 v1、v2、poll 构建。进入原 Compose 部署目录执行：
 
-[v2 发布页](https://github.com/zhu961212/sub2api-gpt-monitor/releases/tag/v0.2.16-gpt-monitor-v2) 提供 Linux amd64/arm64 程序、完整源码、源码补丁、安装说明和校验值。
+```sh
+set -e
+curl -fL https://github.com/zhu961212/sub2api-gpt-monitor/releases/latest/download/sub2api-0.2.16-gpt-monitor-linux.tar.gz -o sub2api-0.2.16-gpt-monitor-linux.tar.gz
+curl -fL https://github.com/zhu961212/sub2api-gpt-monitor/releases/latest/download/SHA256SUMS.txt -o gpt-monitor-SHA256SUMS.txt
+grep '  sub2api-0.2.16-gpt-monitor-linux.tar.gz$' gpt-monitor-SHA256SUMS.txt | sha256sum -c -
+test ! -e gpt-monitor-patch-0.2.16-linux
+tar -xzf sub2api-0.2.16-gpt-monitor-linux.tar.gz
+sh gpt-monitor-patch-0.2.16-linux/update.sh docker-compose.yml sub2api
+```
 
-当前运行 **0.2.16 旧巡检版**：按照 [更新说明](INSTALL.md) 下载并执行 `update.sh`。更新包使用独立目录 `gpt-monitor-patch-0.2.16-v2`，生成独立的 `docker-compose.gpt-monitor-v2.yml`，保留旧程序和官方回滚记录。更新会短暂重建应用服务。
+Compose 文件或服务名不同，替换最后两个参数。包目录已存在时，使用新的独立解压位置并保留包目录名称；不要覆盖正在挂载的旧程序。
 
-当前运行**官方原版 0.2.16**，或仍在 **0.2.15**：先按照 [原版安装/升级说明](https://github.com/zhu961212/sub2api-gpt-monitor/blob/v0.2.16-gpt-monitor/INSTALL.md) 安装匹配的 0.2.16 巡检版，再使用本次更新包。本次 updater 会检查旧构建标记，不能直接用于任意版本。
+检查、查看日志、启动和回滚：
 
-安装成功后版本应包含 `0184257-gpt-monitor-v2`。刷新后台并重新运行巡检，新诊断会随新一轮结果显示。
+```sh
+sh gpt-monitor-patch-0.2.16-linux/manage.sh status docker-compose.yml sub2api
+sh gpt-monitor-patch-0.2.16-linux/manage.sh logs docker-compose.yml sub2api
+sh gpt-monitor-patch-0.2.16-linux/manage.sh start docker-compose.yml sub2api
+sh gpt-monitor-patch-0.2.16-linux/rollback.sh docker-compose.yml sub2api
+```
 
-## 源码与验证
+成功后版本标记为 `0184257-gpt-monitor-patch`。浏览器强制刷新，在“GPT 账号巡检”保存规则并启用。单号测试在自动巡检暂停时也可使用。
 
-- [源码补丁](sub2api-builtin-gpt-monitor.patch)
-- [上游基线](UPSTREAM_BASE.txt)
-- [验证记录](VALIDATION.txt)
-- [Release 附件校验值](SHA256SUMS.txt)
+更新器保留原 Compose 配置链和旧程序，只重建应用服务，启动失败时恢复旧程序。复用原数据库、Redis、账号和规则，不新增数据库迁移。
 
-用户提供的官方源码共 4322 个文件，全部与上述基线一致；本次没有新增数据库 schema 或迁移。后端定向回归、前端 12 项页面/i18n 测试、TypeScript 检查、生产构建和 Linux 两架构交叉编译通过。更新器 18 项模拟 Docker 测试通过，2 项 Windows 权限相关测试跳过。包内清单、基线记录和 Linux shell 校验另行核验。
+## 开发与说明
 
-未连接真实 GPT 账号或部署到服务器，实际网络和账号模型权限需安装后复检。默认回答规则为 iPhone 17，可在后台修改；它不是通用智力测量。
+[项目文档](PROJECT.md) 说明实现、目录和构建步骤。[源码补丁](sub2api-gpt-monitor.patch) 对应官方精确基线 `01842576b3d5c1e2545b5a99ad555d36e28ed306`。Release 提供完整源码 ZIP 和校验值。
 
-历史发布与原版回滚说明均保留。
+开发源码位于 `源码/sub2api-host-0.2.16`。`python make_patch.py` 导出补丁，`python build_release.py` 构建 Linux 包；修改前端后先安装依赖，再运行 `python build_release.py --build-frontend`。
+
+验证见 [VALIDATION.txt](VALIDATION.txt)。本次未连接真实账号或部署到服务器。
