@@ -1,12 +1,14 @@
-Built-in GPT account monitor v3; exact deployed Sub2API 0.2.15 baseline f2669c8cf62555cd92389b3f55920e9e6e7c6ff2.
-Database migrations and Ent schema match that baseline with no added monitor migrations.
-Build marker: f2669c8-gpt-monitor-ui-v3. Date: 2026-10-13.
-Backend: targeted monitor service, repository, config, handler and server tests passed.
-Regression: same account suspends, stays suspended on network error, recovers, then avoids redundant scheduling writes.
-Queries: 200-account keyset pages; display-only status projection; paused accounts remain eligible.
-Mutations: scheduling CAS and outbox commit atomically; observation persistence performs one write without scheduler cache churn.
-Frontend: 7 monitor page tests and 3 locale completeness tests passed; TypeScript check and a fresh production build use the exact upstream baseline plus the monitor UI.
-Deployment: 12 fake Docker tests passed, covering production log prefixes, exact baseline acceptance, different same-version commit rejection, duplicate v3 refusal, integrity checks and rollback.
-Patch: checked against upstream baseline using an isolated Git index.
-Linux amd64 and arm64: cross-compiled with embedded frontend, ELF architecture verified; not executed on a target server.
-No live GPT account, proxy, database, or Docker deployment was contacted. Validation recorded before publication; no target deployment performed.
+Built-in GPT account monitor for official Sub2API 0.2.16.
+Exact release baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
+Build marker: 0184257-gpt-monitor. Date: 2026-10-13.
+Database migrations and Ent schema exactly match official 0.2.16; the monitor adds no schema migrations.
+Monitor requests always send model=gpt-6-astra and reasoning.effort=xhigh; account model mappings cannot change them.
+Legacy saved/environment/API configuration normalizes the fixed fields while retaining other settings.
+Unsupported models, HTTP failures and incomplete responses preserve scheduling without fallback.
+Backend: targeted monitor config, service, repository, handler and server cleanup tests passed.
+Frontend: 12 UI/i18n tests, complete TypeScript check and fresh production build passed.
+Deployment: fake Docker tests cover precise baseline checks, prefixed logs, integrity checks, both architectures and rollback retaining official 0.2.16.
+Patch applies to the exact official tag in an isolated Git index.
+Both Linux binaries embed the rebuilt frontend; ELF architecture and source revision verified.
+The installation archive checksums and source ZIP integrity are verified.
+No live GPT account, proxy, database or user Docker deployment was contacted; real OAuth model availability and scheduling await target verification.

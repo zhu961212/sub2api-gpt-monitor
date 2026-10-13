@@ -1,8 +1,8 @@
 diff --git a/backend/cmd/server/wire.go b/backend/cmd/server/wire.go
-index 0667425..0717a32 100644
+index 6834ad7..f9348a8 100644
 --- a/backend/cmd/server/wire.go
 +++ b/backend/cmd/server/wire.go
-@@ -130,6 +130,7 @@ func provideCleanup(
+@@ -131,6 +131,7 @@ func provideCleanup(
  	openAIAutoReset *service.OpenAIQuotaAutoResetService,
  	promptAudit *securityaudit.PromptService,
  	pluginManager *service.PluginManager,
@@ -10,7 +10,7 @@ index 0667425..0717a32 100644
  ) func() {
  	return func() {
  		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-@@ -142,6 +143,12 @@ func provideCleanup(
+@@ -143,6 +144,12 @@ func provideCleanup(
  
  		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
  		parallelSteps := []cleanupStep{
@@ -24,7 +24,7 @@ index 0667425..0717a32 100644
  				if pluginManager != nil {
  					pluginManager.Stop()
 diff --git a/backend/cmd/server/wire_gen.go b/backend/cmd/server/wire_gen.go
-index 1eda60d..2f2a894 100644
+index 53cef32..0268b02 100644
 --- a/backend/cmd/server/wire_gen.go
 +++ b/backend/cmd/server/wire_gen.go
 @@ -290,7 +290,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
@@ -39,16 +39,16 @@ index 1eda60d..2f2a894 100644
  	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
  	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
  	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
-@@ -353,7 +356,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
+@@ -355,7 +358,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
  	channelMonitorRunner := service.ProvideChannelMonitorRunner(channelMonitorService, settingService, channelMonitorQuotaFetcher)
  	channelMonitorV2Aggregator := service.ProvideChannelMonitorV2Aggregator(channelMonitorV2Repository, db, settingService)
  	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
--	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager)
-+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, gptAccountMonitorService)
+-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager)
++	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, accountExpiryService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, geminiCachedContentService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, channelMonitorV2Aggregator, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, promptService, pluginManager, gptAccountMonitorService)
  	application := &Application{
  		Server:        httpServer,
  		PromptAudit:   promptService,
-@@ -439,6 +442,7 @@ func provideCleanup(
+@@ -442,6 +445,7 @@ func provideCleanup(
  	openAIAutoReset *service.OpenAIQuotaAutoResetService,
  	promptAudit *securityaudit.PromptService,
  	pluginManager *service.PluginManager,
@@ -56,7 +56,7 @@ index 1eda60d..2f2a894 100644
  ) func() {
  	return func() {
  		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-@@ -450,6 +454,12 @@ func provideCleanup(
+@@ -453,6 +457,12 @@ func provideCleanup(
  		}
  
  		parallelSteps := []cleanupStep{
@@ -70,10 +70,10 @@ index 1eda60d..2f2a894 100644
  				if pluginManager != nil {
  					pluginManager.Stop()
 diff --git a/backend/cmd/server/wire_gen_test.go b/backend/cmd/server/wire_gen_test.go
-index d14ca19..223e6e1 100644
+index bb56c67..6dd15f2 100644
 --- a/backend/cmd/server/wire_gen_test.go
 +++ b/backend/cmd/server/wire_gen_test.go
-@@ -100,6 +100,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
+@@ -101,6 +101,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
  		nil, // openAIAutoReset
  		nil, // promptAudit
  		nil, // pluginManager
@@ -82,7 +82,7 @@ index d14ca19..223e6e1 100644
  
  	require.NotPanics(t, func() {
 diff --git a/backend/internal/config/config.go b/backend/internal/config/config.go
-index fe0224a..b4fef09 100644
+index e99b547..f64d21d 100644
 --- a/backend/internal/config/config.go
 +++ b/backend/internal/config/config.go
 @@ -106,6 +106,7 @@ type Config struct {
@@ -93,7 +93,7 @@ index fe0224a..b4fef09 100644
  
  	// Enforce only API-key spending windows in simple mode.
  	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
-@@ -116,6 +117,49 @@ type SimpleModeConfig struct {
+@@ -116,6 +117,61 @@ type SimpleModeConfig struct {
  	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
  }
  
@@ -105,13 +105,25 @@ index fe0224a..b4fef09 100644
 +	TimeoutSeconds     int     `mapstructure:"timeout_seconds" json:"timeout_seconds"`
 +	Concurrency        int     `mapstructure:"concurrency" json:"concurrency"`
 +	Model              string  `mapstructure:"model" json:"model"`
++	ReasoningEffort    string  `mapstructure:"reasoning_effort" json:"reasoning_effort"`
 +	Prompt             string  `mapstructure:"prompt" json:"prompt"`
 +	ExpectedGeneration int     `mapstructure:"expected_generation" json:"expected_generation"`
 +	AccountIDs         []int64 `mapstructure:"account_ids" json:"account_ids"`
 +	RunOnStart         bool    `mapstructure:"run_on_start" json:"run_on_start"`
 +}
 +
-+const DefaultGPTAccountMonitorPrompt = "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++const (
++	GPTAccountMonitorModel           = "gpt-6-astra"
++	GPTAccountMonitorReasoningEffort = "xhigh"
++	DefaultGPTAccountMonitorPrompt   = "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++)
++
++// NormalizeFixedModel upgrades legacy settings and ignores model overrides.
++// The model fields remain in the config/API for compatibility and display only.
++func (c *GPTAccountMonitorConfig) NormalizeFixedModel() {
++	c.Model = GPTAccountMonitorModel
++	c.ReasoningEffort = GPTAccountMonitorReasoningEffort
++}
 +
 +func (c GPTAccountMonitorConfig) Validate() error {
 +	if c.IntervalSeconds < 60 || c.IntervalSeconds > 86400 {
@@ -123,8 +135,8 @@ index fe0224a..b4fef09 100644
 +	if c.Concurrency < 1 || c.Concurrency > 10 {
 +		return fmt.Errorf("gpt_account_monitor.concurrency must be between 1 and 10")
 +	}
-+	if strings.TrimSpace(c.Model) == "" || len(c.Model) > 200 {
-+		return fmt.Errorf("gpt_account_monitor.model must contain 1 to 200 bytes")
++	if c.Model != GPTAccountMonitorModel || c.ReasoningEffort != GPTAccountMonitorReasoningEffort {
++		return fmt.Errorf("gpt_account_monitor.model and reasoning_effort must use the fixed probe configuration")
 +	}
 +	if strings.TrimSpace(c.Prompt) == "" || len(c.Prompt) > 8192 {
 +		return fmt.Errorf("gpt_account_monitor.prompt must contain 1 to 8192 bytes")
@@ -143,16 +155,16 @@ index fe0224a..b4fef09 100644
  // PluginConfig 控制管理员手动上传的本地进程插件。
  // 默认不包含插件，也不允许安装未签名插件；TrustedPublishers 用于追加第三方发布者。
  type PluginConfig struct {
-@@ -1881,6 +1925,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
+@@ -1883,6 +1939,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
  	}
  
  	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
-+	cfg.GPTAccountMonitor.Model = strings.TrimSpace(cfg.GPTAccountMonitor.Model)
++	cfg.GPTAccountMonitor.NormalizeFixedModel()
 +	cfg.GPTAccountMonitor.Prompt = strings.TrimSpace(cfg.GPTAccountMonitor.Prompt)
  	cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
  	if cfg.Server.Mode == "" {
  		cfg.Server.Mode = "debug"
-@@ -2032,6 +2078,16 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
+@@ -2034,6 +2092,17 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
  }
  
  func setDefaults() {
@@ -161,7 +173,8 @@ index fe0224a..b4fef09 100644
 +	viper.SetDefault("gpt_account_monitor.interval_seconds", 1800)
 +	viper.SetDefault("gpt_account_monitor.timeout_seconds", 90)
 +	viper.SetDefault("gpt_account_monitor.concurrency", 3)
-+	viper.SetDefault("gpt_account_monitor.model", "gpt-5.4")
++	viper.SetDefault("gpt_account_monitor.model", GPTAccountMonitorModel)
++	viper.SetDefault("gpt_account_monitor.reasoning_effort", GPTAccountMonitorReasoningEffort)
 +	viper.SetDefault("gpt_account_monitor.prompt", DefaultGPTAccountMonitorPrompt)
 +	viper.SetDefault("gpt_account_monitor.expected_generation", 17)
 +	viper.SetDefault("gpt_account_monitor.account_ids", []int64{})
@@ -169,7 +182,7 @@ index fe0224a..b4fef09 100644
  	viper.SetDefault("run_mode", RunModeStandard)
  	viper.SetDefault("simple_mode.auto_create_default_groups", true)
  	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)
-@@ -2703,6 +2759,11 @@ func setEnvReachableDefaults() {
+@@ -2707,6 +2776,11 @@ func setEnvReachableDefaults() {
  }
  
  func (c *Config) Validate() error {
@@ -194,7 +207,7 @@ index f712690..4c1b952 100644
  	ScheduledTest          *admin.ScheduledTestHandler
  	Channel                *admin.ChannelHandler
 diff --git a/backend/internal/handler/wire.go b/backend/internal/handler/wire.go
-index e87d440..00f7f91 100644
+index bdd47f4..37b54b5 100644
 --- a/backend/internal/handler/wire.go
 +++ b/backend/internal/handler/wire.go
 @@ -51,6 +51,7 @@ func ProvideAdminHandlers(
@@ -213,7 +226,7 @@ index e87d440..00f7f91 100644
  		APIKey:                 apiKeyHandler,
  		ScheduledTest:          scheduledTestHandler,
  		Channel:                channelHandler,
-@@ -279,6 +281,7 @@ var ProviderSet = wire.NewSet(
+@@ -281,6 +283,7 @@ var ProviderSet = wire.NewSet(
  	admin.NewErrorPassthroughHandler,
  	admin.NewTLSFingerprintProfileHandler,
  	admin.NewPluginHandler,
@@ -300,10 +313,10 @@ index 781928a..1ae3148 100644
  	rows, err := r.sql.QueryContext(ctx, `
  		UPDATE accounts
 diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
-index f56fee1..8352ecd 100644
+index ba13b0f..138dbe2 100644
 --- a/backend/internal/repository/wire.go
 +++ b/backend/internal/repository/wire.go
-@@ -130,6 +130,7 @@ var ProviderSet = wire.NewSet(
+@@ -131,6 +131,7 @@ var ProviderSet = wire.NewSet(
  	NewBatchImageQueue,
  	NewBatchImageDownloadLimiter,
  	NewLeaderLockCache,
@@ -392,7 +405,7 @@ index b10f52f..839181b 100644
  				return "", err
  			}
 diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
-index ec3058d..6d1080e 100644
+index 688d729..745e77d 100644
 --- a/backend/internal/service/wire.go
 +++ b/backend/internal/service/wire.go
 @@ -118,6 +118,13 @@ func ProvideOpenAIOAuthService(
@@ -409,7 +422,7 @@ index ec3058d..6d1080e 100644
  // ProvideTokenRefreshService creates and starts TokenRefreshService
  func ProvideTokenRefreshService(
  	accountRepo AccountRepository,
-@@ -937,6 +944,7 @@ var ProviderSet = wire.NewSet(
+@@ -945,6 +952,7 @@ var ProviderSet = wire.NewSet(
  	NewCRSSyncService,
  	ProvideUpdateService,
  	ProvideTokenRefreshService,
@@ -418,10 +431,10 @@ index ec3058d..6d1080e 100644
  	ProvideAccountExpiryService,
  	ProvideOpenAICodexVersionSyncService,
 diff --git a/deploy/.env.example b/deploy/.env.example
-index fa10e83..852d448 100644
+index fa10e83..5cc5087 100644
 --- a/deploy/.env.example
 +++ b/deploy/.env.example
-@@ -477,3 +477,21 @@ OPS_ENABLED=true
+@@ -477,3 +477,23 @@ OPS_ENABLED=true
  # Leave empty for direct connection (recommended for overseas servers)
  # 留空表示直连（适用于海外服务器）
  UPDATE_PROXY_URL=
@@ -437,17 +450,19 @@ index fa10e83..852d448 100644
 +GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS=1800
 +GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS=90
 +GPT_ACCOUNT_MONITOR_CONCURRENCY=3
-+GPT_ACCOUNT_MONITOR_MODEL=gpt-5.4
++# 固定检测 gpt-6-astra / XHigh；旧环境变量中的其他值会被自动忽略。
++GPT_ACCOUNT_MONITOR_MODEL=gpt-6-astra
++GPT_ACCOUNT_MONITOR_REASONING_EFFORT=xhigh
 +GPT_ACCOUNT_MONITOR_PROMPT=不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。
 +GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION=17
 +# 逗号分隔账号 ID，例如 12,34；留空表示全部符合条件的账号。
 +GPT_ACCOUNT_MONITOR_ACCOUNT_IDS=
 +GPT_ACCOUNT_MONITOR_RUN_ON_START=true
 diff --git a/deploy/config.example.yaml b/deploy/config.example.yaml
-index 7066f17..1c8bae2 100644
+index 6b8b049..f243dbc 100644
 --- a/deploy/config.example.yaml
 +++ b/deploy/config.example.yaml
-@@ -1297,3 +1297,21 @@ image_storage:
+@@ -1308,3 +1308,23 @@ image_storage:
    presign_expiry_hours: 24
    # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
    max_download_bytes: 33554432
@@ -463,7 +478,9 @@ index 7066f17..1c8bae2 100644
 +  interval_seconds: 1800
 +  timeout_seconds: 90
 +  concurrency: 3
-+  model: "gpt-5.4"
++  # 模型和推理强度固定；旧配置中的其他值会被自动规范为以下值。
++  model: "gpt-6-astra"
++  reasoning_effort: "xhigh"
 +  prompt: "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
 +  expected_generation: 17
 +  # 空列表表示全部符合条件的账号；可填写 [12, 34]。
@@ -598,10 +615,10 @@ index 1881ff3..f7f8adb 100644
      name: 'AdminPlugins',
 diff --git a/backend/internal/config/gpt_account_monitor_test.go b/backend/internal/config/gpt_account_monitor_test.go
 new file mode 100644
-index 0000000..5014944
+index 0000000..cea0480
 --- /dev/null
 +++ b/backend/internal/config/gpt_account_monitor_test.go
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,115 @@
 +package config
 +
 +import (
@@ -621,7 +638,8 @@ index 0000000..5014944
 +	require.Equal(t, 1800, m.IntervalSeconds)
 +	require.Equal(t, 90, m.TimeoutSeconds)
 +	require.Equal(t, 3, m.Concurrency)
-+	require.Equal(t, "gpt-5.4", m.Model)
++	require.Equal(t, "gpt-6-astra", m.Model)
++	require.Equal(t, "xhigh", m.ReasoningEffort)
 +	require.Equal(t, DefaultGPTAccountMonitorPrompt, m.Prompt)
 +	require.Equal(t, 17, m.ExpectedGeneration)
 +	require.Empty(t, m.AccountIDs)
@@ -636,6 +654,7 @@ index 0000000..5014944
 +		"GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS":     "45",
 +		"GPT_ACCOUNT_MONITOR_CONCURRENCY":         "2",
 +		"GPT_ACCOUNT_MONITOR_MODEL":               " custom-model ",
++		"GPT_ACCOUNT_MONITOR_REASONING_EFFORT":    "low",
 +		"GPT_ACCOUNT_MONITOR_PROMPT":              " custom prompt ",
 +		"GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION": "18",
 +		"GPT_ACCOUNT_MONITOR_ACCOUNT_IDS":         "12,34",
@@ -647,7 +666,7 @@ index 0000000..5014944
 +	require.NoError(t, err)
 +	require.Equal(t, GPTAccountMonitorConfig{
 +		Enabled: true, IntervalSeconds: 600, TimeoutSeconds: 45, Concurrency: 2,
-+		Model: "custom-model", Prompt: "custom prompt", ExpectedGeneration: 18,
++		Model: GPTAccountMonitorModel, ReasoningEffort: GPTAccountMonitorReasoningEffort, Prompt: "custom prompt", ExpectedGeneration: 18,
 +		AccountIDs: []int64{12, 34}, RunOnStart: false,
 +	}, cfg.GPTAccountMonitor)
 +}
@@ -655,19 +674,21 @@ index 0000000..5014944
 +func TestGPTAccountMonitorYAML(t *testing.T) {
 +	resetViperWithJWTSecret(t)
 +	file := filepath.Join(t.TempDir(), "config.yaml")
-+	require.NoError(t, os.WriteFile(file, []byte("gpt_account_monitor:\n  enabled: true\n  account_ids: [41, 42]\n  run_on_start: false\n"), 0o600))
++	require.NoError(t, os.WriteFile(file, []byte("gpt_account_monitor:\n  enabled: true\n  model: legacy-model\n  reasoning_effort: low\n  account_ids: [41, 42]\n  run_on_start: false\n"), 0o600))
 +	t.Setenv("CONFIG_FILE", file)
 +	cfg, err := Load()
 +	require.NoError(t, err)
 +	require.True(t, cfg.GPTAccountMonitor.Enabled)
 +	require.Equal(t, []int64{41, 42}, cfg.GPTAccountMonitor.AccountIDs)
 +	require.False(t, cfg.GPTAccountMonitor.RunOnStart)
++	require.Equal(t, "gpt-6-astra", cfg.GPTAccountMonitor.Model)
++	require.Equal(t, "xhigh", cfg.GPTAccountMonitor.ReasoningEffort)
 +}
 +
 +func TestGPTAccountMonitorValidation(t *testing.T) {
 +	valid := GPTAccountMonitorConfig{
 +		Enabled: true, IntervalSeconds: 1800, TimeoutSeconds: 90, Concurrency: 3,
-+		Model: "gpt-5.4", Prompt: DefaultGPTAccountMonitorPrompt, ExpectedGeneration: 17,
++		Model: GPTAccountMonitorModel, ReasoningEffort: GPTAccountMonitorReasoningEffort, Prompt: DefaultGPTAccountMonitorPrompt, ExpectedGeneration: 17,
 +	}
 +	for _, tc := range []struct {
 +		name   string
@@ -680,6 +701,9 @@ index 0000000..5014944
 +		{"concurrency_low", func(c *GPTAccountMonitorConfig) { c.Concurrency = 0 }},
 +		{"concurrency_high", func(c *GPTAccountMonitorConfig) { c.Concurrency = 11 }},
 +		{"model_empty", func(c *GPTAccountMonitorConfig) { c.Model = " " }},
++		{"model_override", func(c *GPTAccountMonitorConfig) { c.Model = "gpt-5.4" }},
++		{"effort_empty", func(c *GPTAccountMonitorConfig) { c.ReasoningEffort = "" }},
++		{"effort_override", func(c *GPTAccountMonitorConfig) { c.ReasoningEffort = "low" }},
 +		{"prompt_empty", func(c *GPTAccountMonitorConfig) { c.Prompt = " " }},
 +		{"generation_low", func(c *GPTAccountMonitorConfig) { c.ExpectedGeneration = 0 }},
 +		{"generation_high", func(c *GPTAccountMonitorConfig) { c.ExpectedGeneration = 100 }},
@@ -712,10 +736,10 @@ index 0000000..5014944
 +}
 diff --git a/backend/internal/handler/admin/gpt_account_monitor_handler.go b/backend/internal/handler/admin/gpt_account_monitor_handler.go
 new file mode 100644
-index 0000000..4ed9b95
+index 0000000..6045689
 --- /dev/null
 +++ b/backend/internal/handler/admin/gpt_account_monitor_handler.go
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,143 @@
 +package admin
 +
 +import (
@@ -774,14 +798,16 @@ index 0000000..4ed9b95
 +	response.Success(c, cfg)
 +}
 +
-+// Every field is required because this endpoint replaces the complete settings
-+// document. Pointer fields distinguish false/zero values from absent or null.
++// Mutable fields are required because this endpoint replaces the settings.
++// Model fields are optional compatibility inputs; their values are fixed below.
++// Pointer fields distinguish false/zero values from absent or null.
 +type gptAccountMonitorConfigRequest struct {
 +	Enabled            *bool    `json:"enabled"`
 +	IntervalSeconds    *int     `json:"interval_seconds"`
 +	TimeoutSeconds     *int     `json:"timeout_seconds"`
 +	Concurrency        *int     `json:"concurrency"`
 +	Model              *string  `json:"model"`
++	ReasoningEffort    *string  `json:"reasoning_effort"`
 +	Prompt             *string  `json:"prompt"`
 +	ExpectedGeneration *int     `json:"expected_generation"`
 +	AccountIDs         *[]int64 `json:"account_ids"`
@@ -803,19 +829,20 @@ index 0000000..4ed9b95
 +		response.BadRequest(c, "配置只能包含一个 JSON 对象")
 +		return
 +	}
-+	if request.Enabled == nil || request.IntervalSeconds == nil || request.TimeoutSeconds == nil || request.Concurrency == nil || request.Model == nil || request.Prompt == nil || request.ExpectedGeneration == nil || request.AccountIDs == nil || request.RunOnStart == nil {
++	if request.Enabled == nil || request.IntervalSeconds == nil || request.TimeoutSeconds == nil || request.Concurrency == nil || request.Prompt == nil || request.ExpectedGeneration == nil || request.AccountIDs == nil || request.RunOnStart == nil {
 +		response.BadRequest(c, "请提交完整的账号检查配置")
 +		return
 +	}
 +	cfg := config.GPTAccountMonitorConfig{
 +		Enabled: *request.Enabled, IntervalSeconds: *request.IntervalSeconds,
 +		TimeoutSeconds: *request.TimeoutSeconds, Concurrency: *request.Concurrency,
-+		Model: strings.TrimSpace(*request.Model), Prompt: strings.TrimSpace(*request.Prompt),
++		Prompt:             strings.TrimSpace(*request.Prompt),
 +		ExpectedGeneration: *request.ExpectedGeneration, AccountIDs: *request.AccountIDs,
 +		RunOnStart: *request.RunOnStart,
 +	}
++	cfg.NormalizeFixedModel()
 +	if err := cfg.Validate(); err != nil {
-+		response.BadRequest(c, "配置无效：间隔 60–86400 秒、超时 10–300 秒、并发 1–10、代数 1–99；模型和问题不能为空，账号 ID 必须为正整数")
++		response.BadRequest(c, "配置无效：间隔 60–86400 秒、超时 10–300 秒、并发 1–10、代数 1–99；问题不能为空，账号 ID 必须为正整数")
 +		return
 +	}
 +	saved, err := h.monitor.SaveConfig(c.Request.Context(), cfg)
@@ -858,10 +885,10 @@ index 0000000..4ed9b95
 +}
 diff --git a/backend/internal/handler/admin/gpt_account_monitor_handler_test.go b/backend/internal/handler/admin/gpt_account_monitor_handler_test.go
 new file mode 100644
-index 0000000..922dc5e
+index 0000000..2926889
 --- /dev/null
 +++ b/backend/internal/handler/admin/gpt_account_monitor_handler_test.go
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,199 @@
 +package admin
 +
 +import (
@@ -906,7 +933,7 @@ index 0000000..922dc5e
 +func gptMonitorTestConfig() config.GPTAccountMonitorConfig {
 +	return config.GPTAccountMonitorConfig{
 +		Enabled: true, IntervalSeconds: 1800, TimeoutSeconds: 90, Concurrency: 3,
-+		Model: "gpt-5.4", Prompt: config.DefaultGPTAccountMonitorPrompt,
++		Model: config.GPTAccountMonitorModel, ReasoningEffort: config.GPTAccountMonitorReasoningEffort, Prompt: config.DefaultGPTAccountMonitorPrompt,
 +		ExpectedGeneration: 17, AccountIDs: []int64{}, RunOnStart: true,
 +	}
 +}
@@ -941,6 +968,8 @@ index 0000000..922dc5e
 +	require.Zero(t, result.Code)
 +	require.JSONEq(t, "[]", string(result.Data["account_ids"]))
 +	require.Contains(t, result.Data, "interval_seconds")
++	require.JSONEq(t, `"gpt-6-astra"`, string(result.Data["model"]))
++	require.JSONEq(t, `"xhigh"`, string(result.Data["reasoning_effort"]))
 +	require.NotContains(t, result.Data, "IntervalSeconds")
 +}
 +
@@ -949,6 +978,7 @@ index 0000000..922dc5e
 +	cfg := gptMonitorTestConfig()
 +	cfg.Enabled, cfg.RunOnStart = false, false
 +	cfg.Model, cfg.Prompt = " gpt-5.4 ", " question "
++	cfg.ReasoningEffort = "low"
 +	cfg.AccountIDs = []int64{12, 34}
 +	body, err := json.Marshal(cfg)
 +	require.NoError(t, err)
@@ -957,7 +987,8 @@ index 0000000..922dc5e
 +	require.Equal(t, 1, s.saves)
 +	require.False(t, s.cfg.Enabled)
 +	require.False(t, s.cfg.RunOnStart)
-+	require.Equal(t, "gpt-5.4", s.cfg.Model)
++	require.Equal(t, "gpt-6-astra", s.cfg.Model)
++	require.Equal(t, "xhigh", s.cfg.ReasoningEffort)
 +	require.Equal(t, "question", s.cfg.Prompt)
 +	require.Equal(t, []int64{12, 34}, s.cfg.AccountIDs)
 +}
@@ -977,7 +1008,7 @@ index 0000000..922dc5e
 +		{"negative_id", strings.Replace(valid, `"account_ids":[]`, `"account_ids":[-1]`, 1)},
 +		{"interval", strings.Replace(valid, `"interval_seconds":1800`, `"interval_seconds":1`, 1)},
 +		{"disabled_invalid", strings.Replace(strings.Replace(valid, `"interval_seconds":1800`, `"interval_seconds":1`, 1), `"enabled":true`, `"enabled":false`, 1)},
-+		{"oversize", strings.Replace(valid, "gpt-5.4", strings.Repeat("SECRET", 6000), 1)},
++		{"oversize", strings.Replace(valid, "gpt-6-astra", strings.Repeat("SECRET", 6000), 1)},
 +	} {
 +		t.Run(tc.name, func(t *testing.T) {
 +			s := &gptMonitorHandlerStub{}
@@ -986,6 +1017,33 @@ index 0000000..922dc5e
 +			require.Zero(t, s.saves)
 +			require.NotContains(t, w.Body.String(), "SECRET")
 +		})
++	}
++}
++
++func TestGPTMonitorHandlerAcceptsLegacyAndOmittedFixedFields(t *testing.T) {
++	for _, fields := range []map[string]any{
++		{"model": "gpt-5.4"},
++		{},
++		{"model": nil, "reasoning_effort": nil},
++		{"model": "another-model", "reasoning_effort": "low"},
++	} {
++		body, err := json.Marshal(gptMonitorTestConfig())
++		require.NoError(t, err)
++		var request map[string]any
++		require.NoError(t, json.Unmarshal(body, &request))
++		delete(request, "model")
++		delete(request, "reasoning_effort")
++		for key, value := range fields {
++			request[key] = value
++		}
++		body, err = json.Marshal(request)
++		require.NoError(t, err)
++		s := &gptMonitorHandlerStub{}
++		w := gptMonitorRequest(gptMonitorTestRouter(&GPTAccountMonitorHandler{monitor: s}), http.MethodPut, "/config", string(body))
++		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
++		require.Equal(t, "gpt-6-astra", s.cfg.Model)
++		require.Equal(t, "xhigh", s.cfg.ReasoningEffort)
++		require.Equal(t, 1, s.saves)
 +	}
 +}
 +
@@ -1893,10 +1951,10 @@ index 0000000..c4fe9bb
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_management.go b/backend/internal/service/gpt_account_monitor_management.go
 new file mode 100644
-index 0000000..06e4b16
+index 0000000..fca7ebf
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_management.go
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,213 @@
 +package service
 +
 +import (
@@ -1932,6 +1990,7 @@ index 0000000..06e4b16
 +}
 +
 +func cloneGPTMonitorConfig(cfg config.GPTAccountMonitorConfig) config.GPTAccountMonitorConfig {
++	cfg.NormalizeFixedModel()
 +	cfg.AccountIDs = append([]int64{}, cfg.AccountIDs...)
 +	return cfg
 +}
@@ -1959,6 +2018,7 @@ index 0000000..06e4b16
 +	if json.Unmarshal([]byte(raw), &cfg) != nil {
 +		return cfg, errors.New("invalid saved GPT account monitor config")
 +	}
++	cfg.NormalizeFixedModel()
 +	if err := cfg.Validate(); err != nil {
 +		return cfg, err
 +	}
@@ -1966,13 +2026,13 @@ index 0000000..06e4b16
 +}
 +
 +func (s *GPTAccountMonitorService) SaveConfig(ctx context.Context, cfg config.GPTAccountMonitorConfig) (config.GPTAccountMonitorConfig, error) {
-+	cfg.Model = strings.TrimSpace(cfg.Model)
++	cfg.NormalizeFixedModel()
 +	cfg.Prompt = strings.TrimSpace(cfg.Prompt)
 +	if err := cfg.Validate(); err != nil {
 +		return cfg, infraerrors.BadRequest("INVALID_MONITOR_CONFIG", err.Error())
 +	}
-+	if len(cfg.Model) > 200 || strings.ContainsAny(cfg.Model, "\r\n") || len(cfg.Prompt) > 8192 || len(cfg.AccountIDs) > 10000 {
-+		return cfg, infraerrors.BadRequest("INVALID_MONITOR_CONFIG", "模型、问题或账号数量超出限制")
++	if len(cfg.Prompt) > 8192 || len(cfg.AccountIDs) > 10000 {
++		return cfg, infraerrors.BadRequest("INVALID_MONITOR_CONFIG", "问题或账号数量超出限制")
 +	}
 +	cfg = cloneGPTMonitorConfig(cfg)
 +	sort.Slice(cfg.AccountIDs, func(i, j int) bool { return cfg.AccountIDs[i] < cfg.AccountIDs[j] })
@@ -2110,10 +2170,10 @@ index 0000000..06e4b16
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_management_test.go b/backend/internal/service/gpt_account_monitor_management_test.go
 new file mode 100644
-index 0000000..da720a0
+index 0000000..5a01473
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_management_test.go
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,199 @@
 +package service
 +
 +import (
@@ -2124,6 +2184,7 @@ index 0000000..da720a0
 +	"testing"
 +	"time"
 +
++	"github.com/Wei-Shaw/sub2api/internal/config"
 +	"github.com/stretchr/testify/require"
 +)
 +
@@ -2182,6 +2243,55 @@ index 0000000..da720a0
 +	_, err = s.SaveConfig(context.Background(), cfg)
 +	require.Error(t, err)
 +	require.False(t, s.cfg.Enabled)
++}
++
++func TestGPTAccountMonitorLegacyConfigNormalizesWithoutChangingUserSettings(t *testing.T) {
++	s, _, _ := gptMonitorFixture()
++	legacy := `{"enabled":true,"interval_seconds":600,"timeout_seconds":45,"concurrency":2,"model":"gpt-5.4","prompt":"custom prompt","expected_generation":18,"account_ids":[2,4],"run_on_start":false}`
++	settings := &gptMonitorSettingsStub{value: legacy}
++	s.settings = settings
++	loaded, err := s.GetConfig(context.Background())
++	require.NoError(t, err)
++	expected := config.GPTAccountMonitorConfig{
++		Enabled: true, IntervalSeconds: 600, TimeoutSeconds: 45, Concurrency: 2,
++		Model: "gpt-6-astra", ReasoningEffort: "xhigh", Prompt: "custom prompt",
++		ExpectedGeneration: 18, AccountIDs: []int64{2, 4}, RunOnStart: false,
++	}
++	require.Equal(t, expected, loaded)
++	require.Equal(t, legacy, settings.value, "GET must not write settings")
++	loaded.Model, loaded.ReasoningEffort = "caller-override", "low"
++	saved, err := s.SaveConfig(context.Background(), loaded)
++	require.NoError(t, err)
++	require.Equal(t, expected, saved)
++	var persisted config.GPTAccountMonitorConfig
++	require.NoError(t, json.Unmarshal([]byte(settings.value), &persisted))
++	require.Equal(t, expected, persisted)
++	require.Equal(t, expected, s.cfg)
++	// Fixed fields do not change the effective configuration or the scan key.
++	require.Equal(t, gptMonitorConfigHash(expected), gptMonitorConfigHash(loaded))
++}
++
++func TestGPTAccountMonitorStartupAndMissingDatabaseConfigUseFixedModel(t *testing.T) {
++	cfg := &config.Config{GPTAccountMonitor: config.GPTAccountMonitorConfig{
++		Model: "legacy-model", ReasoningEffort: "low", AccountIDs: []int64{3},
++	}}
++	s := NewGPTAccountMonitorService(nil, nil, nil, nil, cfg)
++	for _, c := range []config.GPTAccountMonitorConfig{s.cfg, s.defaults} {
++		require.Equal(t, "gpt-6-astra", c.Model)
++		require.Equal(t, "xhigh", c.ReasoningEffort)
++		require.Equal(t, []int64{3}, c.AccountIDs)
++	}
++	require.Equal(t, "legacy-model", cfg.GPTAccountMonitor.Model, "do not mutate caller configuration")
++	for _, settings := range []SettingRepository{nil, &gptMonitorSettingsStub{}} {
++		s.settings = settings
++		loaded, err := s.GetConfig(context.Background())
++		require.NoError(t, err)
++		require.Equal(t, "gpt-6-astra", loaded.Model)
++		require.Equal(t, "xhigh", loaded.ReasoningEffort)
++		loaded.AccountIDs[0] = 99
++		require.Equal(t, []int64{3}, s.cfg.AccountIDs)
++		require.Equal(t, []int64{3}, s.defaults.AccountIDs)
++	}
 +}
 +
 +func TestGPTAccountMonitorDisablingClearsQueuedManualScan(t *testing.T) {
@@ -2265,10 +2375,10 @@ index 0000000..da720a0
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe.go b/backend/internal/service/gpt_account_monitor_probe.go
 new file mode 100644
-index 0000000..21a6dde
+index 0000000..dd9a1e5
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe.go
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,328 @@
 +package service
 +
 +import (
@@ -2287,6 +2397,8 @@ index 0000000..21a6dde
 +	"strings"
 +	"time"
 +	"unicode"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
 +)
 +
 +// This private context value is honored only by monitor-initiated token refresh.
@@ -2324,12 +2436,12 @@ index 0000000..21a6dde
 +// ProbeGPTAccount uses the account's own OAuth credentials and pinned proxy.
 +// The returned snapshot was reread after token refresh and is suitable for the
 +// caller's conditional scheduling update. Errors never count as a bad answer.
-+func (s *OpenAIGatewayService) ProbeGPTAccount(ctx context.Context, accountID int64, model, prompt string) (*Account, string, error) {
++func (s *OpenAIGatewayService) ProbeGPTAccount(ctx context.Context, accountID int64, _ string, prompt string) (*Account, string, error) {
 +	if s == nil || s.accountRepo == nil || accountID <= 0 {
 +		return nil, "", errors.New("账号检测服务不可用")
 +	}
-+	if strings.TrimSpace(model) == "" || strings.TrimSpace(prompt) == "" || len(model) > 200 || len(prompt) > 8192 {
-+		return nil, "", errors.New("检测模型或问题无效")
++	if strings.TrimSpace(prompt) == "" || len(prompt) > 8192 {
++		return nil, "", errors.New("检测问题无效")
 +	}
 +	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 +	defer cancel()
@@ -2342,7 +2454,7 @@ index 0000000..21a6dde
 +		return account, "", err
 +	}
 +	defer transport.CloseIdleConnections()
-+	answer, err := gptMonitorProbeWithClient(ctx, client, account, token, model, prompt)
++	answer, err := gptMonitorProbeWithClient(ctx, client, account, token, config.GPTAccountMonitorModel, prompt)
 +	return account, answer, err
 +}
 +
@@ -2438,11 +2550,14 @@ index 0000000..21a6dde
 +	return client, transport, nil
 +}
 +
-+func gptMonitorProbeWithClient(ctx context.Context, client *http.Client, account *Account, token, model, prompt string) (string, error) {
++func gptMonitorProbeWithClient(ctx context.Context, client *http.Client, account *Account, token, _ string, prompt string) (string, error) {
++	// Fixed independently of saved settings, account mappings and routing aliases.
++	// An unavailable model/effort is a probe error; never retry with another model.
 +	payload := map[string]any{
-+		"model": normalizeOpenAIModelForUpstream(account, account.GetMappedModel(model)), "instructions": "Answer the user's question from your existing knowledge only. Do not browse, search, call tools, or guess. Respond with only the phone model you know.",
-+		"input":  []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}},
-+		"stream": true, "store": false, "tools": []any{}, "tool_choice": "none",
++		"model": config.GPTAccountMonitorModel, "reasoning": map[string]any{"effort": config.GPTAccountMonitorReasoningEffort},
++		"instructions": "Answer the user's question from your existing knowledge only. Do not browse, search, call tools, or guess. Respond with only the phone model you know.",
++		"input":        []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}},
++		"stream":       true, "store": false, "tools": []any{}, "tool_choice": "none",
 +	}
 +	body, err := json.Marshal(payload)
 +	if err != nil {
@@ -2594,10 +2709,10 @@ index 0000000..21a6dde
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe_test.go b/backend/internal/service/gpt_account_monitor_probe_test.go
 new file mode 100644
-index 0000000..831c3ca
+index 0000000..184c759
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe_test.go
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,496 @@
 +package service
 +
 +import (
@@ -2617,6 +2732,7 @@ index 0000000..831c3ca
 +	"time"
 +
 +	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++	"github.com/stretchr/testify/require"
 +)
 +
 +func gptMonitorCompleted(answer string) string {
@@ -2741,7 +2857,7 @@ index 0000000..831c3ca
 +func TestGPTMonitorRequestIdentityAndNoTools(t *testing.T) {
 +	const prompt = "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
 +	account := gptMonitorTestAccount()
-+	account.Credentials["model_mapping"] = map[string]any{"public-alias": "gpt-5.4"}
++	account.Credentials["model_mapping"] = map[string]any{"public-alias": "gpt-5.4", "gpt-6-astra": "gpt-5.4", "*": "gpt-5.4"}
 +	client := &http.Client{Transport: gptMonitorTestRoundTripper(func(r *http.Request) (*http.Response, error) {
 +		if r.Method != http.MethodPost || r.URL.String() != chatgptCodexURL {
 +			t.Errorf("unexpected endpoint: %s %s", r.Method, r.URL)
@@ -2753,8 +2869,11 @@ index 0000000..831c3ca
 +		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 +			t.Fatal(err)
 +		}
-+		if payload["tool_choice"] != "none" || len(payload["tools"].([]any)) != 0 || payload["store"] != false || payload["stream"] != true || payload["model"] != "gpt-5.4" {
++		if payload["tool_choice"] != "none" || len(payload["tools"].([]any)) != 0 || payload["store"] != false || payload["stream"] != true || payload["model"] != "gpt-6-astra" {
 +			t.Errorf("invalid probe payload: %+v", payload)
++		}
++		if reasoning, ok := payload["reasoning"].(map[string]any); !ok || reasoning["effort"] != "xhigh" {
++			t.Errorf("fixed XHigh reasoning missing: %+v", payload["reasoning"])
 +		}
 +		text := payload["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
 +		if text != prompt || strings.Contains(text.(string), "17") {
@@ -2762,9 +2881,11 @@ index 0000000..831c3ca
 +		}
 +		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(gptMonitorCompleted("iPhone17")))}, nil
 +	})}
-+	answer, err := gptMonitorProbeWithClient(context.Background(), client, account, "test-token", "public-alias", prompt)
-+	if err != nil || answer != "iPhone17" {
-+		t.Fatalf("probe: %q %v", answer, err)
++	for _, model := range []string{"public-alias", "gpt-6-astra", "", "gpt-5.4"} {
++		answer, err := gptMonitorProbeWithClient(context.Background(), client, account, "test-token", model, prompt)
++		if err != nil || answer != "iPhone17" {
++			t.Fatalf("probe: %q %v", answer, err)
++		}
 +	}
 +}
 +
@@ -2944,6 +3065,56 @@ index 0000000..831c3ca
 +	client.Transport = gptMonitorTestRoundTripper(func(*http.Request) (*http.Response, error) { return nil, errors.New("secret-token secret-proxy") })
 +	if _, err := gptMonitorProbeWithClient(context.Background(), client, gptMonitorTestAccount(), "test-token", "gpt-5.4", "question"); err == nil || strings.Contains(err.Error(), "secret") {
 +		t.Fatalf("error leaked: %v", err)
++	}
++}
++
++func TestGPTMonitorUnsupportedModelAndUpstreamErrorsNeverFallbackOrChangeSchedule(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		status int
++		body   string
++	}{
++		{"unsupported_model", 400, `{"error":{"code":"model_not_found","message":"SECRET unsupported model"}}`},
++		{"not_found", 404, `{"error":{"code":"model_not_found"}}`},
++		{"rate_limit", 429, `{"error":{"code":"rate_limit_exceeded"}}`},
++		{"server_error", 500, "SECRET upstream body"},
++		{"failed_stream", 200, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"model_not_found\",\"message\":\"SECRET\"}}}\n\n"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			for _, schedulable := range []bool{true, false} {
++				s, repo, _ := gptMonitorFixture()
++				s.cfg.AccountIDs = []int64{1}
++				s.cfg.Model, s.cfg.ReasoningEffort = "legacy-model", "low"
++				repo.accounts[0].Schedulable = schedulable
++				calls := 0
++				client := &http.Client{Transport: gptMonitorTestRoundTripper(func(r *http.Request) (*http.Response, error) {
++					calls++
++					var payload map[string]any
++					require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
++					require.Equal(t, "gpt-6-astra", payload["model"])
++					require.Equal(t, map[string]any{"effort": "xhigh"}, payload["reasoning"])
++					return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
++				})}
++				s.probe = func(ctx context.Context, _ int64, model, prompt string) (*Account, string, error) {
++					require.Equal(t, "gpt-6-astra", model)
++					answer, err := gptMonitorProbeWithClient(ctx, client, gptMonitorTestAccount(), "test-token", model, prompt)
++					require.Error(t, err)
++					require.NotContains(t, err.Error(), "SECRET")
++					return &repo.accounts[0], answer, err
++				}
++				s.runCycle(context.Background())
++				require.Equal(t, 1, calls, "must never retry with a fallback model")
++				require.Empty(t, repo.writes)
++				result := repo.results[1]
++				require.Equal(t, "error", result.Verdict)
++				require.Equal(t, schedulable, result.Schedulable)
++				require.False(t, result.Changed)
++				require.Empty(t, result.Answer)
++				require.Equal(t, "gpt-6-astra", result.Model)
++				require.Equal(t, "xhigh", result.ReasoningEffort)
++				require.NotContains(t, result.Message, "SECRET")
++			}
++		})
 +	}
 +}
 +
@@ -3206,10 +3377,10 @@ index 0000000..9a2e1a2
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_service.go b/backend/internal/service/gpt_account_monitor_service.go
 new file mode 100644
-index 0000000..252db08
+index 0000000..8bffb6c
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service.go
-@@ -0,0 +1,518 @@
+@@ -0,0 +1,520 @@
 +package service
 +
 +import (
@@ -3253,6 +3424,7 @@ index 0000000..252db08
 +	Answer             string    `json:"answer,omitempty"`
 +	Message            string    `json:"message"`
 +	Model              string    `json:"model"`
++	ReasoningEffort    string    `json:"reasoning_effort,omitempty"`
 +	ExpectedGeneration int       `json:"expected_generation"`
 +	Schedulable        bool      `json:"schedulable"`
 +	Changed            bool      `json:"changed"`
@@ -3281,9 +3453,8 @@ index 0000000..252db08
 +func NewGPTAccountMonitorService(repo AccountRepository, gateway *OpenAIGatewayService, store GPTAccountMonitorStore, settings SettingRepository, cfg *config.Config) *GPTAccountMonitorService {
 +	s := &GPTAccountMonitorService{repo: repo, store: store, settings: settings, trigger: make(chan string, 1), wake: make(chan struct{}, 1)}
 +	if cfg != nil {
-+		s.cfg = cfg.GPTAccountMonitor
-+		s.cfg.AccountIDs = append([]int64(nil), cfg.GPTAccountMonitor.AccountIDs...)
-+		s.defaults = s.cfg
++		s.cfg = cloneGPTMonitorConfig(cfg.GPTAccountMonitor)
++		s.defaults = cloneGPTMonitorConfig(s.cfg)
 +	}
 +	if gateway != nil {
 +		s.probe = gateway.ProbeGPTAccount
@@ -3446,6 +3617,7 @@ index 0000000..252db08
 +	return s.runCycleWithConfig(parent, cfg, false)
 +}
 +func (s *GPTAccountMonitorService) runCycleWithConfig(parent context.Context, cfg config.GPTAccountMonitorConfig, manual bool) time.Duration {
++	cfg.NormalizeFixedModel()
 +	s.cycleMu.Lock()
 +	defer s.cycleMu.Unlock()
 +	retry := 30 * time.Second
@@ -3623,9 +3795,10 @@ index 0000000..252db08
 +}
 +
 +func (s *GPTAccountMonitorService) checkOne(parent context.Context, owner string, listed *Account, cfg config.GPTAccountMonitorConfig) {
++	cfg.NormalizeFixedModel()
 +	ctx, cancel := context.WithTimeout(parent, time.Duration(cfg.TimeoutSeconds+10)*time.Second)
 +	defer cancel()
-+	r := GPTAccountMonitorResult{CheckedAt: time.Now().UTC(), Verdict: "error", Model: cfg.Model, ExpectedGeneration: cfg.ExpectedGeneration, Schedulable: listed.Schedulable}
++	r := GPTAccountMonitorResult{CheckedAt: time.Now().UTC(), Verdict: "error", Model: cfg.Model, ReasoningEffort: cfg.ReasoningEffort, ExpectedGeneration: cfg.ExpectedGeneration, Schedulable: listed.Schedulable}
 +	probeCtx, probeCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutSeconds)*time.Second)
 +	snapshot, answer, err := s.probe(probeCtx, listed.ID, cfg.Model, cfg.Prompt)
 +	probeCancel()
@@ -3633,7 +3806,7 @@ index 0000000..252db08
 +		return
 +	}
 +	if err != nil {
-+		r.Message = "检测失败（网络、认证、代理或响应不完整），调度未改变"
++		r.Message = "检测失败（网络、认证、代理、模型不可用或响应不完整），调度未改变"
 +		s.saveResult(parent, listed.ID, r)
 +		return
 +	}
@@ -3730,10 +3903,10 @@ index 0000000..252db08
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_service_test.go b/backend/internal/service/gpt_account_monitor_service_test.go
 new file mode 100644
-index 0000000..b1e9475
+index 0000000..6404bfc
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service_test.go
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,208 @@
 +package service
 +
 +import (
@@ -3818,7 +3991,7 @@ index 0000000..b1e9475
 +	parent := int64(1)
 +	r.accounts[5].ParentAccountID = &parent
 +	s.probe = func(_ context.Context, id int64, model, prompt string) (*Account, string, error) {
-+		require.Equal(t, "gpt-5.4", model)
++		require.Equal(t, "gpt-6-astra", model)
 +		require.Equal(t, config.DefaultGPTAccountMonitorPrompt, prompt)
 +		switch id {
 +		case 1:
@@ -3839,6 +4012,10 @@ index 0000000..b1e9475
 +	require.NotContains(t, r.results[3].Message, "secret")
 +	require.True(t, r.results[2].Changed)
 +	require.True(t, r.results[2].Schedulable)
++	for _, result := range r.results {
++		require.Equal(t, "gpt-6-astra", result.Model)
++		require.Equal(t, "xhigh", result.ReasoningEffort)
++	}
 +	require.True(t, store.released)
 +}
 +func TestGPTAccountMonitorSharedScheduleAndLease(t *testing.T) {
@@ -3940,108 +4117,163 @@ index 0000000..b1e9475
 +}
 diff --git a/deploy/gpt-account-monitor/README.md b/deploy/gpt-account-monitor/README.md
 new file mode 100644
-index 0000000..018a8d7
+index 0000000..f13cb87
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/README.md
-@@ -0,0 +1,92 @@
-+# Sub2API 0.2.15：GPT 账号巡检管理页 v3
+@@ -0,0 +1,147 @@
++# Sub2API 0.2.16：GPT 账号巡检宿主补丁
 +
-+安装包：`sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz`。按当前实际部署的原版 Sub2API `0.2.15`、完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 构建，构建标记为 `f2669c8-gpt-monitor-ui-v3`，包含 Linux amd64、arm64 程序。v3 在该精确基线上加入账号巡检，不包含此基线之后的上游功能，不新增数据库迁移。
++安装包：`sub2api-0.2.16-gpt-monitor.tar.gz`，解压目录：`gpt-monitor-patch-0.2.16`。基于官方 Sub2API `v0.2.16`、完整提交 `01842576b3d5c1e2545b5a99ad555d36e28ed306`，程序版本保持 `0.2.16`，构建标记为 `0184257-gpt-monitor`，包含 Linux amd64、arm64 程序。
 +
-+这是内置管理页，直接替换现有容器中的程序。无需插件、公钥、管理员 API Key 或新增容器；普通用户请求继续使用原有转发流程。脚本保留当前镜像，仅重建指定的应用服务，重建时应用会短暂中断。
++检测模型固定为 **`gpt-6-astra`**，推理强度固定为 **XHigh**（请求值 `xhigh`）。旧配置中的其他模型会统一归一到这一固定值；页面不再允许修改模型。检测回答符合目标 iPhone 型号规则时开启账号调度，不符合时关闭，后续复检恢复正常则重新开启。代理、网络、认证等请求失败不改变原调度状态。
 +
-+当前运行上述完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 原版的部署可直接安装。相同版本号、其他 commit 的构建不能使用本包；安装脚本会在重建容器前拒绝。已安装 v1/v2 的部署，请先按下文“从 v1/v2 升级”用旧包回滚，确认恢复该原版后再解压 v3，避免覆盖正在挂载执行的程序。
++这是应用源码补丁后编译的程序挂载包，直接替换现有应用容器中的程序。无需插件、公钥、管理员 API Key 或新增容器。补丁不新增数据库迁移；升级官方 `0.2.16` 时，该版本自带的迁移会正常执行。已有巡检配置、检查结果和账号保存在原数据库中。
 +
-+v3 保留每页 200 个账号的分页读取，只查询巡检或页面展示所需字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
++本包只支持上述精确官方构建。同版本号但不同 commit、旧版宿主补丁和已安装本补丁的程序都会被安装脚本拒绝。后续官方升级仍需匹配新版源码重新编译补丁；保留旧程序挂载时，仅更新镜像不会更新实际运行的程序。
 +
-+## 三步安装
++## 已运行官方 0.2.16：安装补丁
 +
-+1. 将安装包放到**原 Docker Compose 部署目录**，在该目录解压：
-+
-+   ```sh
-+   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz
-+   ```
-+
-+2. 在同一目录执行。第一个参数是原 Compose 文件，第二个是服务名，可按实际名称替换：
-+
-+   ```sh
-+   sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
-+   ```
-+
-+   脚本会校验文件、确认当前运行版本恰为 `0.2.15` 且原始 commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
-+
-+3. 浏览器强制刷新后台，打开左侧 **GPT 账号巡检**，或直接访问 `/admin/gpt-account-monitor`。检查默认关闭；在页面保存并启用，然后点击“立即检查”查看结果。
-+
-+页面可修改间隔、超时、并发、模型、问题、目标 iPhone 代数及账号范围。页面保存的配置写入数据库，优先于环境变量与配置文件，自动生效，无需为每次修改重启容器。默认间隔 30 分钟，继续使用完整回答符合 iPhone 17 型号规则即正常的固定判断；目标代数不会随日期自动更新。这是按你指定的回答规则检查，并不代表通用智力测量。
-+
-+仅处理启用状态的独立 OpenAI OAuth 账号，包含关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用及已过期账号。每个账号必须绑定启用且未过期的代理，检测和必要的令牌刷新使用该账号代理。缺少有效代理、网络或认证失败时保留调度状态。有效完整回答符合目标型号则开启调度，不符合则关闭，之后继续复检。
-+
-+## 从 v1/v2 升级
-+
-+v1/v2 基于 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，包含原版 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 之后的上游迁移。回滚恢复原程序，不会撤销已经执行的数据库迁移（例如新增的 `groups.i18n` 字段）；v3 本身不新增迁移。
-+
-+不要直接将 v3 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
++在原 Compose 部署目录操作，保持原 Compose 文件、`.env` 和项目名称不变。以下默认应用服务名为 `sub2api`，可按实际名称替换。安装会短暂重建应用容器。
 +
 +```sh
-+sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
-+docker compose -f docker-compose.yml exec -T sub2api /app/sub2api --version
++tar -xzf sub2api-0.2.16-gpt-monitor.tar.gz
++sh gpt-monitor-patch-0.2.16/apply.sh docker-compose.yml sub2api
 +```
 +
-+确认输出版本为 `0.2.15`、commit 为完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.pre-v3.yml.bak` 和 `gpt-monitor-patch-pre-v3`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。若原镜像未恢复为该完整 commit，请先恢复正确的原版镜像，不要绕过安装检查。
++脚本校验安装包，读取当前运行程序的版本及完整 commit，并按当前容器镜像架构选择程序。然后生成两个文件：
 +
-+然后按上述“三步安装”解压 v3 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，确认精确基线，再备份旧文件并手动安装 v3，保留原命令全部选项。
++- `docker-compose.gpt-monitor.yml`：固定当前官方镜像 ID，并只读挂载新巡检程序。
++- `docker-compose.gpt-monitor.rollback-0.2.16.yml`：仅固定同一个官方 `0.2.16` 镜像 ID，用于卸载补丁后恢复官方程序。
 +
-+## 后续启动和回滚
++任一文件已存在时安装都会停止，不覆盖旧文件。保留这两个文件及 `gpt-monitor-patch-0.2.16` 目录。升级官方版时使用的 `docker-compose.official-0.2.16.yml` 也可以保留；安装脚本不修改它。
 +
-+安装后，应用服务的后续 Compose 操作应同时带上两个文件：
++安装后检查：
 +
 +```sh
-+docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml up -d --no-deps sub2api
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml exec -T sub2api /app/sub2api --version
 +docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml logs --tail=100 sub2api
 +```
 +
-+程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15` 的完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`。
++应看到 `Sub2API 0.2.16 (commit: 0184257-gpt-monitor,`。浏览器强制刷新后台，进入 **GPT 账号巡检** 或 `/admin/gpt-account-monitor`，确认固定模型显示为 `gpt-6-astra / XHigh`，保存并启用，再点击“立即巡检”。
 +
-+```sh
-+sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
-+```
++## 从官方 0.2.15 + 巡检 v3 升级
 +
-+回滚使用原 Compose 文件，仅重建应用服务，不执行 `down`、不删除数据卷。配置和已有检查结果保留；检查已改变的账号调度开关不会自动还原。回滚后只使用原 Compose 文件，保留的覆盖文件不再加载。
++先备份数据库并升级官方程序，再装新补丁。新包使用独立目录，不能解压覆盖仍被挂载的旧 `gpt-monitor-patch` 目录。以下适用于原部署只有 `docker-compose.yml`、应用服务 `sub2api`、PostgreSQL 容器 `sub2api-postgres` 的情况。其他名称请对应替换；多个 Compose 文件或自定义项目名请参考后文。
 +
-+## 原部署使用多个 Compose 文件或自定义选项
-+
-+如果原来使用多个 `-f`、`-p` 项目名、`--env-file`、远程 Docker daemon 或多副本，请保留原命令全部选项并手动操作，不直接运行上述脚本。远程 Docker 的绑定路径必须存在于 daemon 所在服务器。
-+
-+1. 在原部署目录执行 `(cd gpt-monitor-patch && sha256sum -c SHA256SUMS)`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`、commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，其他构建不得继续安装；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
-+2. 创建同名覆盖文件；将下面镜像 ID、绝对路径、架构和服务名替换为实际值。保留原命令的全部 Compose 文件顺序，只在最后追加新文件：
-+
-+   ```yaml
-+   services:
-+     sub2api:
-+       image: 'sha256:当前运行容器的完整镜像ID'
-+       pull_policy: never
-+       volumes:
-+         - type: bind
-+           source: '/原部署目录/gpt-monitor-patch/bin/linux-amd64/sub2api'
-+           target: /app/sub2api
-+           read_only: true
-+           bind:
-+             create_host_path: false
-+   ```
++1. 进入原部署目录并备份数据库。命令从 PostgreSQL 容器读取数据库用户名和数据库名，不显示密码。备份成功且目录可由 `pg_restore` 读取后，才继续升级。
 +
 +   ```sh
-+   docker compose -p 原项目名 --env-file 原环境文件 -f 原文件一.yml -f 原文件二.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build sub2api
++   cd /opt/sub2api
++   (
++     set -eu
++     umask 077
++     backup="sub2api-before-0.2.16-$(date +%Y%m%d-%H%M%S).dump"
++     test ! -e "$backup"
++     docker exec sub2api-postgres sh -c 'exec pg_dump -U "$POSTGRES_USER" -d "${POSTGRES_DB:-$POSTGRES_USER}" -Fc' > "$backup"
++     test -s "$backup"
++     docker exec -i sub2api-postgres pg_restore -l < "$backup" > /dev/null
++     printf '数据库备份：%s\n' "$backup"
++   )
 +   ```
 +
-+3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
++2. 备份旧巡检覆盖文件，保留旧程序目录；创建官方 `0.2.16` 镜像覆盖文件。以下命令拒绝覆盖已有同名文件。
 +
-+安装脚本通过模拟 Docker 命令验证；未连接你的实际 Docker、数据库或真实账号，真实账号巡检与部署效果尚未验证。本地交付不代表已发布或已部署到服务器。
++   ```sh
++   (
++     set -eu
++     test -f docker-compose.gpt-monitor.yml
++     test ! -e docker-compose.gpt-monitor.pre-0.2.16.yml.bak
++     test ! -e docker-compose.official-0.2.16.yml
++     (
++       umask 077
++       set -C
++       cat > docker-compose.official-0.2.16.yml <<'EOF'
++   services:
++     sub2api:
++       image: weishaw/sub2api:0.2.16
++   EOF
++     )
++     docker compose -f docker-compose.yml -f docker-compose.official-0.2.16.yml config --quiet
++     docker compose -f docker-compose.yml -f docker-compose.official-0.2.16.yml pull sub2api
++     mv docker-compose.gpt-monitor.yml docker-compose.gpt-monitor.pre-0.2.16.yml.bak
++     docker compose -f docker-compose.yml -f docker-compose.official-0.2.16.yml up -d --no-deps --force-recreate --no-build --wait --wait-timeout 180 sub2api
++   )
++   ```
++
++   这次重建只加载原配置和官方镜像覆盖文件，解除旧巡检程序挂载，并等待官方 `0.2.16` 启动健康后再继续。官方自带的数据库迁移会正常执行，数据库、Redis 容器及数据卷保留。这里的 `--wait` 需要支持该选项的 Docker Compose；当前服务器的 `v5.5.0` 可使用。
++
++3. 确认官方程序正常启动，版本为 `0.2.16`，commit 必须完整匹配 `01842576b3d5c1e2545b5a99ad555d36e28ed306`。若容器仍在启动，请检查日志并等待；若 commit 不同，请停止，不要跳过检查。
++
++   ```sh
++   docker compose -f docker-compose.yml -f docker-compose.official-0.2.16.yml exec -T sub2api /app/sub2api --version
++   docker compose -f docker-compose.yml -f docker-compose.official-0.2.16.yml logs --tail=100 sub2api
++   ```
++
++4. 按前文“已运行官方 0.2.16：安装补丁”安装新包。`apply.sh` 读取的是当前正在运行的官方 `0.2.16` 镜像 ID，所以原 Compose 文件中即使仍写 `0.2.15`，新巡检和专用回滚配置也都会固定到已经验证的官方 `0.2.16`。
++
++如果第二步失败，检查输出后修复即可。不要在数据库已执行 `0.2.16` 迁移后重新加载旧巡检覆盖文件或使用旧包的 `rollback.sh`；它们可能启动旧版程序。新包的回滚脚本仅恢复官方 `0.2.16`。数据库降级属于独立恢复操作，需要结合升级前备份处理。
++
++## 检测规则和性能
++
++模型和推理强度固定为 `gpt-6-astra / XHigh`。可修改巡检间隔、超时、并发、问题、目标 iPhone 代数和账号范围；目标代数不会随日期自动更新。页面配置写入数据库并自动生效。默认每 30 分钟检查，沿用完整回答符合目标型号规则即正常的判定；这是指定回答规则检查，不是通用智力测量。
++
++仅处理启用状态的独立 OpenAI OAuth 账号，包括已经关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用和已过期账号。每个账号须绑定启用且未过期的代理，检测和必要的令牌刷新均使用该代理。缺少有效代理，或网络、认证失败时保留原调度状态。
++
++账号按每页 200 个读取，只查询巡检或页面需要的字段。结果不改变调度时只执行一次数据库写入；需要切换调度时，在同一个事务提交账号更新与 outbox 调度通知。
++
++## 后续启动和卸载补丁
++
++补丁安装后，应用服务操作须加载巡检覆盖文件：
++
++```sh
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml up -d --no-deps sub2api
++```
++
++卸载巡检、恢复官方 `0.2.16`：
++
++```sh
++sh gpt-monitor-patch-0.2.16/rollback.sh docker-compose.yml sub2api
++```
++
++回滚脚本验证专用镜像覆盖文件，并使用原 Compose 文件加 `docker-compose.gpt-monitor.rollback-0.2.16.yml` 重建应用服务。它不会加载巡检挂载、不会仅凭原文件中的旧标签退回 `0.2.15`，也不执行 `down` 或删除数据卷。回滚后应看到官方完整 commit `01842576b3d5c1e2545b5a99ad555d36e28ed306`。已有巡检数据保留；此前巡检修改的账号调度开关不会自动还原，可在账号管理中调整。
++
++卸载后启动官方程序，继续带上专用官方镜像文件：
++
++```sh
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.rollback-0.2.16.yml up -d --no-deps sub2api
++```
++
++不要清理仍被这两个覆盖文件引用的本机镜像。若安装后的版本核验失败，脚本会保留文件供检查，可运行新包的 `rollback.sh` 恢复官方 `0.2.16`。重新安装前请先回滚、核验原版，再把两个生成文件移至未使用的备份名；脚本不会覆盖已有配置。
++
++## 多个 Compose 文件或自定义选项
++
++原部署若使用多个 `-f`、自定义 `-p` 项目名、`--env-file`、远程 Docker daemon 或多副本，不要直接套用上述简化脚本。保留原命令所有选项，先备份数据库，再用不包含旧巡检挂载的 Compose 配置升级官方 `0.2.16`。
++
++手动安装时先运行 `(cd gpt-monitor-patch-0.2.16 && sha256sum -c SHA256SUMS)`，核验运行中的官方版本及完整 commit，读取容器的完整镜像 ID 和镜像架构，再创建巡检覆盖文件。挂载目标始终是 `/app/sub2api`，示例：
++
++```yaml
++services:
++  sub2api:
++    image: 'sha256:当前官方0.2.16容器的完整镜像ID'
++    pull_policy: never
++    volumes:
++      - type: bind
++        source: '/原部署目录/gpt-monitor-patch-0.2.16/bin/linux-amd64/sub2api'
++        target: /app/sub2api
++        read_only: true
++        bind:
++          create_host_path: false
++```
++
++在原命令的最后追加该文件，仅重建应用服务，安装后核验构建标记 `0184257-gpt-monitor`。另存不包含 `volumes` 的官方 `0.2.16` 镜像覆盖文件供手动回滚使用。回滚时去掉巡检文件，追加固定官方 `0.2.16` 的镜像文件，保留所有原有选项；不要只使用仍写旧版镜像的原配置。远程 Docker 的绑定路径必须存在于 daemon 所在服务器。
++
++部署脚本通过模拟 Docker 命令测试；本地测试不连接服务器、数据库或真实账号。真实账号检测和实际部署需在安装后确认。
 diff --git a/deploy/gpt-account-monitor/apply.sh b/deploy/gpt-account-monitor/apply.sh
 new file mode 100644
-index 0000000..86d101a
+index 0000000..e052dca
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/apply.sh
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,112 @@
 +#!/bin/sh
 +# Apply the built-in management-page binary to one existing Compose service.
 +set -eu
@@ -4049,7 +4281,7 @@ index 0000000..86d101a
 +
 +fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
 +if [ "$#" -gt 2 ]; then
-+  fail '用法：sh gpt-monitor-patch/apply.sh docker-compose.yml [sub2api]'
++  fail '用法：sh gpt-monitor-patch-0.2.16/apply.sh docker-compose.yml [sub2api]'
 +fi
 +compose_file=docker-compose.yml
 +service=sub2api
@@ -4062,11 +4294,13 @@ index 0000000..86d101a
 +compose_file="$compose_dir/$(basename -- "$compose_file")"
 +bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 +override_file="$compose_dir/docker-compose.gpt-monitor.yml"
++rollback_file="$compose_dir/docker-compose.gpt-monitor.rollback-0.2.16.yml"
 +case "$bundle_dir$compose_file" in
 +  *'
 +'*) fail '路径不能包含换行符' ;;
 +esac
 +[ ! -e "$override_file" ] && [ ! -L "$override_file" ] || fail 'docker-compose.gpt-monitor.yml 已存在；为避免覆盖，已停止安装'
++[ ! -e "$rollback_file" ] && [ ! -L "$rollback_file" ] || fail 'docker-compose.gpt-monitor.rollback-0.2.16.yml 已存在；为避免覆盖官方镜像记录，已停止安装'
 +command -v sha256sum >/dev/null 2>&1 || fail '系统缺少 sha256sum'
 +[ -f "$bundle_dir/SHA256SUMS" ] || fail '安装包缺少 SHA256SUMS'
 +[ -f "$bundle_dir/UPSTREAM_BASE.txt" ] || fail '安装包缺少 UPSTREAM_BASE.txt'
@@ -4081,12 +4315,14 @@ index 0000000..86d101a
 +case "$container_id" in ''|*[!0-9a-f]*) fail '原部署中必须有且只有一个正在运行的指定服务；多副本部署请按说明手动操作' ;; esac
 +current_version=$(base_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取现有程序版本；未修改容器'
 +version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
-+[ "$version" = '0.2.15' ] || fail '本安装包仅适用于当前运行版本 0.2.15；未修改容器'
++[ "$version" = '0.2.16' ] || fail '本安装包仅适用于当前运行版本 0.2.16；请先按安装说明升级官方程序，未修改容器'
 +current_commit=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<=NF;i++) if ($i=="Sub2API") { if (i+3<=NF && $(i+2)=="(commit:") { commit=$(i+3); sub(/,$/,"",commit); print commit } exit } }')
-+[ "$current_commit" != 'f2669c8-gpt-monitor-ui-v3' ] || fail '当前程序已包含此管理页版本，无需重复安装'
-+[ "$current_commit" = 'f2669c8cf62555cd92389b3f55920e9e6e7c6ff2' ] || fail '当前构建基线不符：仅接受原版 0.2.15、完整 commit f2669c8cf62555cd92389b3f55920e9e6e7c6ff2；v1/v2 请先使用旧包 rollback.sh 恢复该原版后再安装；未修改容器'
++[ "$current_commit" != '0184257-gpt-monitor' ] || fail '当前程序已包含此管理页版本，无需重复安装'
++[ "$current_commit" = '01842576b3d5c1e2545b5a99ad555d36e28ed306' ] || fail '当前构建基线不符：仅接受原版 0.2.16、完整 commit 01842576b3d5c1e2545b5a99ad555d36e28ed306；请按安装说明解除旧补丁挂载并升级官方程序，未修改容器'
 +image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
-+case "$image_id" in sha256:*) ;; *) fail '无法确认当前容器的镜像 ID' ;; esac
++image_hash=${image_id#sha256:}
++[ "$image_id" != "$image_hash" ] && [ "${#image_hash}" -eq 64 ] || fail '无法确认当前容器的完整镜像 ID'
++case "$image_hash" in *[!0-9a-f]*) fail '无法确认当前容器的完整镜像 ID' ;; esac
 +platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
 +case "$platform" in
 +  linux/amd64) binary="$bundle_dir/bin/linux-amd64/sub2api" ;;
@@ -4098,11 +4334,25 @@ index 0000000..86d101a
 +# Quote YAML and escape Compose interpolation in the absolute bind-mount path.
 +yaml_binary=$(printf '%s' "$binary" | sed "s/'/''/g" | sed 's/\$/$$/g')
 +yaml_image=$(printf '%s' "$image_id" | sed "s/'/''/g")
++# Pin rollback to the verified official 0.2.16 image, even if the base file still
++# names 0.2.15. Never reuse an existing file or load the monitor bind mount here.
++(
++  umask 077
++  set -C
++  cat > "$rollback_file" <<EOF
++# Official Sub2API 0.2.16, commit 01842576b3d5c1e2545b5a99ad555d36e28ed306.
++# Generated by gpt-monitor-patch-0.2.16/apply.sh. Keep for rollback.
++services:
++  '$service':
++    image: '$yaml_image'
++    pull_policy: never
++EOF
++) || fail '创建官方 0.2.16 镜像记录失败；未修改容器'
 +(
 +  umask 077
 +  set -C
 +  cat > "$override_file" <<EOF
-+# Generated by gpt-monitor-patch/apply.sh. Keep the package directory in place.
++# Generated by gpt-monitor-patch-0.2.16/apply.sh. Keep the package directory in place.
 +services:
 +  '$service':
 +    image: '$yaml_image'
@@ -4117,6 +4367,7 @@ index 0000000..86d101a
 +EOF
 +) || fail '创建覆盖配置失败；未修改容器'
 +
++docker compose -f "$compose_file" -f "$rollback_file" config --quiet || fail '官方 0.2.16 回滚配置检查失败；保留覆盖文件供检查，未重建容器'
 +docker compose -f "$compose_file" -f "$override_file" config --quiet || fail 'Compose 配置检查失败；保留覆盖文件供检查，未重建容器'
 +docker compose -f "$compose_file" -f "$override_file" up -d --no-deps --force-recreate --pull never --no-build "$service" || fail '服务重建失败；请执行安装包内 rollback.sh 回滚'
 +
@@ -4126,25 +4377,28 @@ index 0000000..86d101a
 +  attempt=$((attempt + 1))
 +  installed_version=$(docker compose -f "$compose_file" -f "$override_file" exec -T "$service" /app/sub2api --version 2>&1) || installed_version=''
 +  case "$installed_version" in
-+    *'Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,'*) verified=true; break ;;
++    *'Sub2API 0.2.16 (commit: 0184257-gpt-monitor,'*) verified=true; break ;;
 +  esac
 +  sleep 2
 +done
 +[ "$verified" = true ] || fail '服务已重建，但未确认新程序版本；请查看容器日志或执行 rollback.sh'
 +printf '\n安装完成。刷新后台，打开「GPT 账号巡检」或 /admin/gpt-account-monitor，保存并启用检查。\n'
-+printf '后续启动须同时传入原 Compose 文件和 docker-compose.gpt-monitor.yml；请保留 gpt-monitor-patch 目录。\n'
++printf '检测模型固定为 gpt-6-astra，推理强度固定为 XHigh。\n'
++printf '后续启动须同时传入原 Compose 文件和 docker-compose.gpt-monitor.yml；请保留 gpt-monitor-patch-0.2.16 目录。\n'
++printf '请保留 docker-compose.gpt-monitor.rollback-0.2.16.yml；rollback.sh 使用它恢复官方 0.2.16，不会降回 0.2.15。\n'
 diff --git a/deploy/gpt-account-monitor/rollback.sh b/deploy/gpt-account-monitor/rollback.sh
 new file mode 100644
-index 0000000..f37d2cf
+index 0000000..3979b76
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/rollback.sh
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,53 @@
 +#!/bin/sh
-+# Recreate only the existing application service using its original Compose file.
++# Remove only the monitor binary and retain the verified official 0.2.16 image.
 +set -eu
++set -f
 +
 +fail() { printf '回滚失败：%s\n' "$*" >&2; exit 1; }
-+[ "$#" -le 2 ] || fail '用法：sh gpt-monitor-patch/rollback.sh docker-compose.yml [sub2api]'
++[ "$#" -le 2 ] || fail '用法：sh gpt-monitor-patch-0.2.16/rollback.sh docker-compose.yml [sub2api]'
 +compose_file=docker-compose.yml
 +service=sub2api
 +if [ "$#" -ge 1 ]; then compose_file=$1; fi
@@ -4154,19 +4408,49 @@ index 0000000..f37d2cf
 +compose_dir=$(CDPATH= cd -- "$(dirname -- "$compose_file")" && pwd -P)
 +[ "$(pwd -P)" = "$compose_dir" ] || fail '请先进入原 Compose 文件所在目录'
 +compose_file="$compose_dir/$(basename -- "$compose_file")"
++rollback_file="$compose_dir/docker-compose.gpt-monitor.rollback-0.2.16.yml"
++[ -f "$rollback_file" ] && [ ! -L "$rollback_file" ] || fail '缺少安装时生成的官方 0.2.16 镜像记录；不能仅使用可能仍指定 0.2.15 的原 Compose 文件回滚'
++image_id=$(sed -n "s/^    image: '\(sha256:[0-9a-f]*\)'$/\1/p" "$rollback_file")
++image_hash=${image_id#sha256:}
++[ "$image_id" != "$image_hash" ] && [ "${#image_hash}" -eq 64 ] || fail '官方 0.2.16 镜像记录格式不符；未修改容器'
++case "$image_hash" in *[!0-9a-f]*) fail '官方 0.2.16 镜像记录格式不符；未修改容器' ;; esac
++# Accept only the exact image-only file produced by apply.sh for this service.
++# This excludes accidental use of an old monitor overlay or another service.
++cat <<EOF | cmp -s - "$rollback_file" || fail '官方 0.2.16 镜像记录已被修改或服务名不符；未修改容器'
++# Official Sub2API 0.2.16, commit 01842576b3d5c1e2545b5a99ad555d36e28ed306.
++# Generated by gpt-monitor-patch-0.2.16/apply.sh. Keep for rollback.
++services:
++  '$service':
++    image: '$image_id'
++    pull_policy: never
++EOF
 +command -v docker >/dev/null 2>&1 || fail '找不到 docker 命令'
 +docker compose version >/dev/null 2>&1 || fail '需要 Docker Compose v2'
-+docker compose -f "$compose_file" config --quiet || fail '原 Compose 配置检查失败'
-+docker compose -f "$compose_file" up -d --no-deps --force-recreate --pull never --no-build "$service" || fail '服务重建失败，请查看原 Compose 配置和容器日志'
-+printf '\n已使用原 Compose 配置重建应用服务。未执行 down，也未删除数据卷。\n'
-+printf '以后只使用原 Compose 文件；保留的 docker-compose.gpt-monitor.yml 不再加载。\n'
++docker image inspect "$image_id" >/dev/null 2>&1 || fail '安装时记录的官方 0.2.16 镜像已不在本机；请按安装说明恢复该版本后再回滚'
++official_compose() { docker compose -f "$compose_file" -f "$rollback_file" "$@"; }
++official_compose config --quiet || fail '官方 0.2.16 Compose 配置检查失败'
++official_compose up -d --no-deps --force-recreate --pull never --no-build "$service" || fail '服务重建失败，请查看 Compose 配置和容器日志'
++
++attempt=0
++verified=false
++while [ "$attempt" -lt 15 ]; do
++  attempt=$((attempt + 1))
++  current_version=$(official_compose exec -T "$service" /app/sub2api --version 2>&1) || current_version=''
++  case "$current_version" in
++    *'Sub2API 0.2.16 (commit: 01842576b3d5c1e2545b5a99ad555d36e28ed306,'*) verified=true; break ;;
++  esac
++  sleep 2
++done
++[ "$verified" = true ] || fail '服务已重建，但未确认官方 0.2.16 版本；请查看容器日志，不要使用旧版程序回滚数据库'
++printf '\n已移除巡检程序挂载，恢复官方 Sub2API 0.2.16。未执行 down，也未删除数据卷。\n'
++printf '后续启动须使用原 Compose 文件和 docker-compose.gpt-monitor.rollback-0.2.16.yml，不再加载 docker-compose.gpt-monitor.yml。\n'
 +printf '此前检查修改的账号调度开关不会自动还原，请按需在账号管理中调整。\n'
 diff --git a/deploy/gpt-account-monitor/test_scripts.py b/deploy/gpt-account-monitor/test_scripts.py
 new file mode 100644
-index 0000000..23089ee
+index 0000000..5d90f1f
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/test_scripts.py
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,385 @@
 +"""Run deployment-script tests with a fake docker command; no daemon is used."""
 +import hashlib
 +import os
@@ -4178,6 +4462,9 @@ index 0000000..23089ee
 +
 +
 +HERE = Path(__file__).resolve().parent
++OFFICIAL_COMMIT = "01842576b3d5c1e2545b5a99ad555d36e28ed306"
++PATCH_COMMIT = "0184257-gpt-monitor"
++IMAGE_ID = "sha256:" + "0123456789abcdef" * 4
 +BASH = shutil.which("bash")
 +if not BASH and Path("C:/Program Files/Git/bin/bash.exe").exists():
 +    BASH = "C:/Program Files/Git/bin/bash.exe"
@@ -4205,20 +4492,26 @@ index 0000000..23089ee
 +  while [ "$#" -gt 0 ]; do
 +    case "$1" in
 +      -f)
-+        case "$2" in *docker-compose.gpt-monitor.yml) mode=patch ;; esac
++        case "$2" in
++          *docker-compose.gpt-monitor.yml) mode=patch ;;
++          *docker-compose.gpt-monitor.rollback-0.2.16.yml)
++            mode=official
++            selected_image=$(sed -n "s/^    image: '\(sha256:[0-9a-f]*\)'$/\1/p" "$2")
++            ;;
++        esac
 +        shift 2
 +        ;;
 +      ps)
 +        printf '%s\n' "$MOCK_CONTAINER_ID"
 +        exit 0
 +        ;;
-+      config) exit 0 ;;
++      config) [ "$MOCK_CONFIG_OK" = true ]; exit ;;
 +      exec)
 +        if [ -f "$MOCK_STATE" ] && [ "$(cat "$MOCK_STATE")" = patch ]; then
 +          if [ -n "$MOCK_INSTALLED_VERSION_OUTPUT" ]; then
 +            printf '%s\n' "$MOCK_INSTALLED_VERSION_OUTPUT"
 +          else
-+            printf 'Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3, built: test)\n'
++            printf 'Sub2API 0.2.16 (commit: 0184257-gpt-monitor, built: test)\n'
 +          fi
 +        else
 +          if [ -n "$MOCK_ORIGINAL_VERSION_OUTPUT" ]; then
@@ -4230,6 +4523,10 @@ index 0000000..23089ee
 +        exit 0
 +        ;;
 +      up)
++        [ "$MOCK_UP_OK" = true ] || exit 1
++        if [ "$mode" = official ]; then
++          printf '%s' "$selected_image" > "$MOCK_RESTORED_IMAGE"
++        fi
 +        printf '%s' "$mode" > "$MOCK_STATE"
 +        exit 0
 +        ;;
@@ -4238,10 +4535,11 @@ index 0000000..23089ee
 +  done
 +fi
 +if [ "$1" = inspect ]; then
-+  printf 'sha256:0123456789abcdef\n'
++  printf '%s\n' "$MOCK_IMAGE_ID"
 +  exit 0
 +fi
 +if [ "$1" = image ] && [ "$2" = inspect ]; then
++  [ "$MOCK_IMAGE_EXISTS" = true ] || exit 1
 +  printf '%s\n' "$MOCK_PLATFORM"
 +  exit 0
 +fi
@@ -4256,14 +4554,14 @@ index 0000000..23089ee
 +        self.addCleanup(self.tmp.cleanup)
 +        self.root = Path(self.tmp.name) / "deployment space ' $value"
 +        self.root.mkdir()
-+        self.bundle = self.root / "gpt-monitor-patch"
++        self.bundle = self.root / "gpt-monitor-patch-0.2.16"
 +        self.bundle.mkdir()
 +        self.fake_bin = self.root / "fake-bin"
 +        self.fake_bin.mkdir()
-+        (self.root / "docker-compose.yml").write_text("services:\n  custom_api:\n    image: original\n", encoding="utf-8")
++        (self.root / "docker-compose.yml").write_text("services:\n  custom_api:\n    image: weishaw/sub2api:0.2.15\n", encoding="utf-8")
 +        for name in ("apply.sh", "rollback.sh", "README.md"):
 +            shutil.copyfile(HERE / name, self.bundle / name)
-+        (self.bundle / "UPSTREAM_BASE.txt").write_text("f2669c8cf62555cd92389b3f55920e9e6e7c6ff2\n", encoding="utf-8")
++        (self.bundle / "UPSTREAM_BASE.txt").write_text(OFFICIAL_COMMIT + "\n", encoding="utf-8")
 +        for arch in ("amd64", "arm64"):
 +            binary = self.bundle / "bin" / ("linux-" + arch) / "sub2api"
 +            binary.parent.mkdir(parents=True)
@@ -4272,14 +4570,22 @@ index 0000000..23089ee
 +        docker = self.fake_bin / "docker"
 +        docker.write_text(FAKE_DOCKER, encoding="utf-8", newline="\n")
 +        docker.chmod(0o755)
++        sleeper = self.fake_bin / "sleep"
++        sleeper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
++        sleeper.chmod(0o755)
 +        self.log = self.root / "docker.log"
 +        self.env = os.environ.copy()
 +        self.env.update({
 +            "MOCK_DOCKER_LOG": shell_path(self.log),
 +            "MOCK_STATE": shell_path(self.root / "state"),
 +            "MOCK_COMPOSE_OK": "true",
-+            "MOCK_VERSION": "0.2.15",
-+            "MOCK_COMMIT": "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2",
++            "MOCK_CONFIG_OK": "true",
++            "MOCK_UP_OK": "true",
++            "MOCK_IMAGE_EXISTS": "true",
++            "MOCK_IMAGE_ID": IMAGE_ID,
++            "MOCK_RESTORED_IMAGE": shell_path(self.root / "restored-image"),
++            "MOCK_VERSION": "0.2.16",
++            "MOCK_COMMIT": OFFICIAL_COMMIT,
 +            "MOCK_ORIGINAL_VERSION_OUTPUT": "",
 +            "MOCK_INSTALLED_VERSION_OUTPUT": "",
 +            "MOCK_PLATFORM": "linux/amd64",
@@ -4309,11 +4615,14 @@ index 0000000..23089ee
 +        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 +        override = (self.root / "docker-compose.gpt-monitor.yml").read_text(encoding="utf-8")
 +        self.assertIn("'custom_api':", override)
-+        self.assertIn("image: 'sha256:0123456789abcdef'", override)
++        self.assertIn(f"image: '{IMAGE_ID}'", override)
 +        self.assertIn("linux-amd64/sub2api", override)
 +        self.assertIn("deployment space '' $$value", override)
 +        self.assertIn("read_only: true", override)
 +        self.assertIn("create_host_path: false", override)
++        rollback = (self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml").read_text(encoding="utf-8")
++        self.assertIn(f"image: '{IMAGE_ID}'", rollback)
++        self.assertNotIn("volumes:", rollback)
 +        up = [line for line in self.calls() if "|up|" in line]
 +        self.assertEqual(len(up), 1)
 +        self.assertIn("|--no-deps|--force-recreate|--pull|never|--no-build|custom_api|", up[0])
@@ -4328,12 +4637,12 @@ index 0000000..23089ee
 +    def test_actual_log_prefixed_version_installs_and_verifies(self):
 +        original = (
 +            "2026-10-13T15:40:32.556+0800 INFO stdlog "
-+            "Sub2API 0.2.15 (commit: f2669c8cf62555cd92389b3f55920e9e6e7c6ff2, "
++            f"Sub2API 0.2.16 (commit: {OFFICIAL_COMMIT}, "
 +            'built: 2026-10-09T03:28:03Z) {"service":"sub2api"}'
 +        )
 +        self.env["MOCK_ORIGINAL_VERSION_OUTPUT"] = original
 +        self.env["MOCK_INSTALLED_VERSION_OUTPUT"] = original.replace(
-+            "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2", "f2669c8-gpt-monitor-ui-v3"
++            OFFICIAL_COMMIT, PATCH_COMMIT
 +        )
 +        result = self.run_script()
 +        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -4343,7 +4652,7 @@ index 0000000..23089ee
 +    def test_log_prefixed_other_commit_never_recreates(self):
 +        self.env["MOCK_ORIGINAL_VERSION_OUTPUT"] = (
 +            "2026-10-13T15:40:32.556+0800 INFO stdlog "
-+            "Sub2API 0.2.15 (commit: ab80abc6d1f929a6864c8804fd077b509d21fda2, "
++            "Sub2API 0.2.16 (commit: ab80abc6d1f929a6864c8804fd077b509d21fda2, "
 +            'built: 2026-10-09T03:28:03Z) {"service":"sub2api"}'
 +        )
 +        result = self.run_script()
@@ -4353,7 +4662,7 @@ index 0000000..23089ee
 +        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
 +    def test_wrong_version_and_arch_never_recreate(self):
-+        for key, value in (("MOCK_VERSION", "0.2.16"), ("MOCK_PLATFORM", "linux/386")):
++        for key, value in (("MOCK_VERSION", "0.2.15"), ("MOCK_PLATFORM", "linux/386")):
 +            with self.subTest(key=key):
 +                original = self.env[key]
 +                self.env[key] = value
@@ -4370,8 +4679,8 @@ index 0000000..23089ee
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertEqual(self.calls(), [])
 +
-+    def test_existing_v3_stops_before_recreate(self):
-+        self.env["MOCK_COMMIT"] = "f2669c8-gpt-monitor-ui-v3"
++    def test_existing_patch_stops_before_recreate(self):
++        self.env["MOCK_COMMIT"] = PATCH_COMMIT
 +        result = self.run_script()
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertIn("当前程序已包含此管理页版本", result.stderr)
@@ -4381,8 +4690,8 @@ index 0000000..23089ee
 +    def test_same_version_with_other_commit_never_recreates(self):
 +        for commit in (
 +            "ab80abc6d1f929a6864c8804fd077b509d21fda2",
-+            "f2669c8",
-+            "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2-custom",
++            OFFICIAL_COMMIT[:7],
++            OFFICIAL_COMMIT + "-custom",
 +            "unknown",
 +            "",
 +        ):
@@ -4394,14 +4703,14 @@ index 0000000..23089ee
 +                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
 +        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
-+    def test_v1_and_v2_require_rollback_to_original_baseline(self):
-+        for commit in ("ab80abc-gpt-monitor-ui-v1", "ab80abc-gpt-monitor-ui-v2"):
++    def test_old_patches_require_official_upgrade(self):
++        for commit in ("ab80abc-gpt-monitor-ui-v1", "ab80abc-gpt-monitor-ui-v2", "f2669c8-gpt-monitor-ui-v3"):
 +            with self.subTest(commit=commit):
 +                self.env["MOCK_COMMIT"] = commit
 +                result = self.run_script()
 +                self.assertNotEqual(result.returncode, 0)
 +                self.assertIn("当前构建基线不符", result.stderr)
-+                self.assertIn("旧包 rollback.sh", result.stderr)
++                self.assertIn("解除旧补丁挂载并升级官方程序", result.stderr)
 +                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
 +        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
@@ -4413,46 +4722,146 @@ index 0000000..23089ee
 +        self.assertEqual(override.read_text(encoding="utf-8"), "keep this exact file")
 +        self.assertEqual(self.calls(), [])
 +
++    def test_existing_official_image_record_is_not_overwritten(self):
++        rollback = self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml"
++        rollback.write_text("keep original image record", encoding="utf-8")
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertEqual(rollback.read_text(encoding="utf-8"), "keep original image record")
++        self.assertEqual(self.calls(), [])
++
++    def test_existing_official_upgrade_overlay_is_untouched(self):
++        upgrade = self.root / "docker-compose.official-0.2.16.yml"
++        content = "services:\n  custom_api:\n    image: weishaw/sub2api:0.2.16\n"
++        upgrade.write_text(content, encoding="utf-8")
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertEqual(upgrade.read_text(encoding="utf-8"), content)
++
++    def test_invalid_image_id_is_rejected_before_writing_overlays(self):
++        for image_id in ("sha256:123456", "sha256:" + "g" * 64, "weishaw/sub2api:0.2.16"):
++            with self.subTest(image_id=image_id):
++                self.env["MOCK_IMAGE_ID"] = image_id
++                result = self.run_script()
++                self.assertNotEqual(result.returncode, 0)
++                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++                self.assertFalse((self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_config_failure_preserves_recovery_file_and_never_recreates(self):
++        self.env["MOCK_CONFIG_OK"] = "false"
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertTrue((self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
 +    def test_multiple_containers_are_rejected(self):
 +        self.env["MOCK_CONTAINER_ID"] = "a" * 64 + "\n" + "b" * 64
 +        result = self.run_script()
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
-+    def test_rollback_uses_only_original_compose_and_keeps_override(self):
++    def test_rollback_retains_official_0216_even_when_base_names_0215(self):
++        installed = self.run_script()
++        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
 +        override = self.root / "docker-compose.gpt-monitor.yml"
-+        override.write_text("retain for inspection", encoding="utf-8")
++        original = override.read_text(encoding="utf-8")
++        self.log.write_text("", encoding="utf-8")
 +        result = self.run_script("rollback.sh")
 +        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 +        calls = "\n".join(self.calls())
 +        self.assertNotIn("docker-compose.gpt-monitor.yml", calls)
++        self.assertIn("docker-compose.gpt-monitor.rollback-0.2.16.yml", calls)
 +        self.assertNotIn("|down|", calls)
 +        self.assertNotIn("|rm|", calls)
++        self.assertNotIn("|volume|", calls)
 +        self.assertIn("|up|-d|--no-deps|--force-recreate|--pull|never|--no-build|custom_api|", calls)
-+        self.assertEqual(override.read_text(encoding="utf-8"), "retain for inspection")
++        self.assertEqual((self.root / "restored-image").read_text(encoding="utf-8"), IMAGE_ID)
++        self.assertIn("weishaw/sub2api:0.2.15", (self.root / "docker-compose.yml").read_text(encoding="utf-8"))
++        self.assertEqual(override.read_text(encoding="utf-8"), original)
++        self.assertIn("恢复官方 Sub2API 0.2.16", result.stdout)
++
++    def test_rollback_missing_record_never_uses_old_base_image(self):
++        result = self.run_script("rollback.sh")
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("不能仅使用", result.stderr)
++        self.assertEqual(self.calls(), [])
++
++    def test_rollback_rejects_changed_record_and_wrong_service(self):
++        installed = self.run_script()
++        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
++        rollback = self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml"
++        original = rollback.read_text(encoding="utf-8")
++        for content, service in ((original + "    volumes: []\n", "custom_api"), (original, "another_api")):
++            with self.subTest(service=service):
++                rollback.write_text(content, encoding="utf-8", newline="\n")
++                self.log.write_text("", encoding="utf-8")
++                result = self.run_script("rollback.sh", service)
++                self.assertNotEqual(result.returncode, 0)
++                self.assertEqual(self.calls(), [])
++
++    def test_rollback_missing_official_image_never_recreates(self):
++        installed = self.run_script()
++        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
++        self.env["MOCK_IMAGE_EXISTS"] = "false"
++        self.log.write_text("", encoding="utf-8")
++        result = self.run_script("rollback.sh")
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("镜像已不在本机", result.stderr)
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_failed_apply_keeps_official_0216_recovery_available(self):
++        self.env["MOCK_UP_OK"] = "false"
++        installed = self.run_script()
++        self.assertNotEqual(installed.returncode, 0)
++        self.assertIn("rollback.sh", installed.stderr)
++        self.assertTrue((self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml").exists())
++        self.env["MOCK_UP_OK"] = "true"
++        result = self.run_script("rollback.sh")
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertEqual((self.root / "restored-image").read_text(encoding="utf-8"), IMAGE_ID)
++
++    def test_rollback_verifies_full_official_commit_before_reporting_success(self):
++        installed = self.run_script()
++        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
++        self.env["MOCK_ORIGINAL_VERSION_OUTPUT"] = (
++            "2026-10-13T15:40:32.556+0800 INFO stdlog "
++            "Sub2API 0.2.16 (commit: unexpected, built: test)"
++        )
++        result = self.run_script("rollback.sh")
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("未确认官方 0.2.16 版本", result.stderr)
++        self.assertNotIn("已移除巡检程序挂载", result.stdout)
 +
 +
 +if __name__ == "__main__":
 +    unittest.main(verbosity=2)
 diff --git a/frontend/src/api/admin/gptAccountMonitor.ts b/frontend/src/api/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000..6d98387
+index 0000000..e79225d
 --- /dev/null
 +++ b/frontend/src/api/admin/gptAccountMonitor.ts
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,60 @@
 +import { apiClient } from '../client'
++
++export const GPT_ACCOUNT_MONITOR_MODEL = 'gpt-6-astra'
++export const GPT_ACCOUNT_MONITOR_REASONING_EFFORT = 'xhigh'
 +
 +export interface GPTAccountMonitorConfig {
 +  enabled: boolean
 +  interval_seconds: number
 +  timeout_seconds: number
 +  concurrency: number
-+  model: string
++  readonly model: string
++  readonly reasoning_effort?: string
 +  prompt: string
 +  expected_generation: number
 +  account_ids: number[]
 +  run_on_start: boolean
 +}
++
++export type GPTAccountMonitorConfigInput = Omit<GPTAccountMonitorConfig, 'model' | 'reasoning_effort'> &
++  Partial<Pick<GPTAccountMonitorConfig, 'model' | 'reasoning_effort'>>
 +
 +export interface GPTAccountMonitorResult {
 +  account_id: number
@@ -4463,6 +4872,7 @@ index 0000000..6d98387
 +  answer?: string
 +  message: string
 +  model: string
++  reasoning_effort?: string
 +  expected_generation: number
 +  schedulable: boolean
 +  changed: boolean
@@ -4482,7 +4892,7 @@ index 0000000..6d98387
 +export async function getConfig(signal?: AbortSignal): Promise<GPTAccountMonitorConfig> {
 +  return (await apiClient.get<GPTAccountMonitorConfig>(`${base}/config`, { signal })).data
 +}
-+export async function saveConfig(config: GPTAccountMonitorConfig, signal?: AbortSignal): Promise<GPTAccountMonitorConfig> {
++export async function saveConfig(config: GPTAccountMonitorConfigInput, signal?: AbortSignal): Promise<GPTAccountMonitorConfig> {
 +  return (await apiClient.put<GPTAccountMonitorConfig>(`${base}/config`, config, { signal })).data
 +}
 +export async function getStatus(signal?: AbortSignal): Promise<GPTAccountMonitorStatus> {
@@ -4494,7 +4904,7 @@ index 0000000..6d98387
 +export default { getConfig, saveConfig, getStatus, run }
 diff --git a/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000..2775f7c
+index 0000000..afd5306
 --- /dev/null
 +++ b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
 @@ -0,0 +1,35 @@
@@ -4514,7 +4924,7 @@ index 0000000..2775f7c
 +    configTitle: 'Monitor settings', configHint: 'Changes apply when saved. Run now uses the saved configuration.',
 +    enableSchedule: 'Enable scheduled checks', enableHint: 'Allow checks to enable or disable scheduling for selected accounts.',
 +    interval: 'Check interval (seconds)', timeout: 'Account timeout (seconds)', concurrency: 'Concurrent accounts', generation: 'Expected iPhone generation',
-+    model: 'Check model', prompt: 'Check prompt', runOnStart: 'Check immediately after server startup',
++    model: 'Check model', reasoningEffort: 'Reasoning effort', fixedModelHint: 'Every check uses gpt-6-astra with XHigh reasoning effort.', prompt: 'Check prompt', runOnStart: 'Check immediately after server startup',
 +    scope: 'Accounts to check', allAccounts: 'All eligible OAuth accounts', selectedAccounts: 'Selected accounts only',
 +    scopeHint: 'Only active OpenAI OAuth accounts are listed. Shadow, expired, and API Key accounts are excluded.',
 +    accountSearch: 'Search account name or ID', selectedCount: '{count} selected', noAccounts: 'No eligible accounts found',
@@ -4523,7 +4933,7 @@ index 0000000..2775f7c
 +    save: 'Save settings', saving: 'Saving…', saved: 'Monitor settings saved', reset: 'Discard changes', dirty: 'Unsaved changes',
 +    run: 'Run now', runHint: 'Check the selected accounts and apply scheduling changes from the results.', queued: 'Check queued. Results will refresh automatically.',
 +    saveFirst: 'Save your changes before running a check.', enableFirst: 'Enable scheduled checks and save first.',
-+    chooseAccounts: 'Select at least one OAuth account or choose all accounts.', invalidConfig: 'Check numeric ranges and enter a model and prompt.',
++    chooseAccounts: 'Select at least one OAuth account or choose all accounts.', invalidConfig: 'Check numeric ranges and enter a prompt.',
 +    records: 'Account check results', recordCount: 'Showing {shown} of {total}; up to 200 latest results',
 +    searchResults: 'Search account, ID, answer, or message', allResults: 'All results', refresh: 'Refresh status',
 +    account: 'Account / proxy', checkedAt: 'Checked at', verdict: 'Result', scheduling: 'Scheduling', response: 'Answer / message',
@@ -4535,7 +4945,7 @@ index 0000000..2775f7c
 +}
 diff --git a/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000..7020c96
+index 0000000..fc0a9a7
 --- /dev/null
 +++ b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
 @@ -0,0 +1,35 @@
@@ -4555,7 +4965,7 @@ index 0000000..7020c96
 +    configTitle: '巡检设置', configHint: '保存后立即生效；立即巡检使用已保存配置。',
 +    enableSchedule: '启用定时巡检', enableHint: '允许巡检自动开启或关闭所选账号的调度。',
 +    interval: '巡检间隔（秒）', timeout: '单账号超时（秒）', concurrency: '并发账号数', generation: '期望 iPhone 代数',
-+    model: '检测模型', prompt: '检测问题', runOnStart: '服务启动后立即检查',
++    model: '检测模型', reasoningEffort: '推理强度', fixedModelHint: '每次巡检固定使用 gpt-6-astra 和 XHigh。', prompt: '检测问题', runOnStart: '服务启动后立即检查',
 +    scope: '巡检账号', allAccounts: '全部符合条件的 OAuth 账号', selectedAccounts: '只检查指定账号',
 +    scopeHint: '仅列出正常的 OpenAI OAuth 账号；影子账号、过期账号和 API Key 账号不能加入。',
 +    accountSearch: '搜索账号名称或 ID', selectedCount: '已选择 {count} 个', noAccounts: '没有符合条件的账号',
@@ -4564,7 +4974,7 @@ index 0000000..7020c96
 +    save: '保存设置', saving: '正在保存…', saved: '巡检设置已保存', reset: '还原修改', dirty: '有未保存的修改',
 +    run: '立即巡检', runHint: '检查所选账号，并按结果自动修改调度。', queued: '已提交巡检，结果将自动刷新',
 +    saveFirst: '请先保存修改，再立即巡检。', enableFirst: '请先启用定时巡检并保存。',
-+    chooseAccounts: '请至少选择一个 OAuth 账号，或切换为全部账号。', invalidConfig: '请检查参数范围，并填写模型与检测问题。',
++    chooseAccounts: '请至少选择一个 OAuth 账号，或切换为全部账号。', invalidConfig: '请检查参数范围，并填写检测问题。',
 +    records: '账号检测结果', recordCount: '展示 {shown} / {total} 条，最多保留 200 条最新结果',
 +    searchResults: '搜索账号、ID、回答或说明', allResults: '全部结果', refresh: '刷新状态',
 +    account: '账号 / 代理', checkedAt: '检查时间', verdict: '结果', scheduling: '调度', response: '回答 / 说明',
@@ -4576,10 +4986,10 @@ index 0000000..7020c96
 +}
 diff --git a/frontend/src/views/admin/GPTAccountMonitorView.vue b/frontend/src/views/admin/GPTAccountMonitorView.vue
 new file mode 100644
-index 0000000..650bf40
+index 0000000..b484d0c
 --- /dev/null
 +++ b/frontend/src/views/admin/GPTAccountMonitorView.vue
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,314 @@
 +<template>
 +  <AppLayout>
 +    <div class="mx-auto max-w-7xl space-y-6">
@@ -4643,7 +5053,13 @@ index 0000000..650bf40
 +            </div>
 +            <div class="grid gap-5 lg:grid-cols-[1fr_2fr]">
 +              <div class="space-y-4">
-+                <label class="monitor-label">{{ tr('model') }}<input v-model="form.model" class="input mt-2" type="text" maxlength="200" required data-testid="model" /></label>
++                <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
++                  <dl class="space-y-3 text-sm">
++                    <div><dt class="text-gray-500 dark:text-gray-400">{{ tr('model') }}</dt><dd class="mt-1 font-semibold text-gray-900 dark:text-white" data-testid="model">{{ GPT_ACCOUNT_MONITOR_MODEL }}</dd></div>
++                    <div><dt class="text-gray-500 dark:text-gray-400">{{ tr('reasoningEffort') }}</dt><dd class="mt-1 font-semibold text-gray-900 dark:text-white" data-testid="reasoning-effort">XHigh</dd></div>
++                  </dl>
++                  <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">{{ tr('fixedModelHint') }}</p>
++                </div>
 +                <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><input v-model="form.run_on_start" type="checkbox" class="accent-primary-600" />{{ tr('runOnStart') }}</label>
 +              </div>
 +              <label class="monitor-label">{{ tr('prompt') }}<textarea v-model="form.prompt" class="input mt-2 min-h-28 resize-y" rows="3" maxlength="8000" required data-testid="prompt" /></label>
@@ -4705,7 +5121,7 @@ index 0000000..650bf40
 +                <td class="whitespace-nowrap px-4 py-4 text-xs text-gray-500">{{ dateText(account.checked_at) }}</td>
 +                <td class="whitespace-nowrap px-4 py-4"><span class="rounded-full px-2 py-1 text-xs font-medium" :class="verdictClass(account.verdict)">{{ tr(verdictKind(account.verdict)) }}</span></td>
 +                <td class="whitespace-nowrap px-4 py-4"><p :class="account.schedulable ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'">{{ tr(account.schedulable ? 'scheduleOn' : 'scheduleOff') }}</p><p class="mt-1 text-xs text-gray-400">{{ tr(account.changed ? 'changed' : 'unchanged') }}</p></td>
-+                <td class="min-w-64 max-w-lg px-5 py-4"><p class="whitespace-pre-wrap break-words text-gray-800 dark:text-gray-200" data-testid="answer">{{ account.answer || '—' }}</p><p class="mt-2 break-words text-xs text-gray-500">{{ account.message }}</p><p class="mt-1 text-xs text-gray-400">{{ account.model }} · iPhone {{ account.expected_generation }}</p></td>
++                <td class="min-w-64 max-w-lg px-5 py-4"><p class="whitespace-pre-wrap break-words text-gray-800 dark:text-gray-200" data-testid="answer">{{ account.answer || '—' }}</p><p class="mt-2 break-words text-xs text-gray-500">{{ account.message }}</p><p class="mt-1 text-xs text-gray-400" data-testid="result-model">{{ account.model }}<template v-if="account.reasoning_effort"> · {{ account.reasoning_effort === GPT_ACCOUNT_MONITOR_REASONING_EFFORT ? 'XHigh' : account.reasoning_effort }}</template> · iPhone {{ account.expected_generation }}</p></td>
 +              </tr>
 +              <tr v-if="!filteredResults.length"><td colspan="5" class="p-10 text-center"><Icon name="clock" size="xl" class="mx-auto mb-3 text-gray-300" /><p class="text-sm text-gray-600 dark:text-gray-300">{{ tr(status.accounts.length ? 'noMatches' : 'noResults') }}</p><p v-if="!status.accounts.length" class="mt-2 text-xs text-gray-400">{{ tr('noResultsHint') }}</p></td></tr>
 +            </tbody>
@@ -4722,7 +5138,7 @@ index 0000000..650bf40
 +import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 +import { useI18n } from 'vue-i18n'
 +import { adminAPI } from '@/api/admin'
-+import type { GPTAccountMonitorConfig, GPTAccountMonitorStatus } from '@/api/admin/gptAccountMonitor'
++import { GPT_ACCOUNT_MONITOR_MODEL, GPT_ACCOUNT_MONITOR_REASONING_EFFORT, type GPTAccountMonitorConfig, type GPTAccountMonitorStatus } from '@/api/admin/gptAccountMonitor'
 +import type { AccountListItem } from '@/types'
 +import { useAppStore } from '@/stores'
 +import AppLayout from '@/components/layout/AppLayout.vue'
@@ -4734,7 +5150,7 @@ index 0000000..650bf40
 +const tr = (key: string, values: Record<string, string | number> = {}) => t(`admin.gptAccountMonitor.${key}`, values)
 +const appStore = useAppStore()
 +const stepUp = useStepUp()
-+const form = reactive<GPTAccountMonitorConfig>({ enabled: false, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: 'gpt-5.4', prompt: '', expected_generation: 17, account_ids: [], run_on_start: true })
++const form = reactive<GPTAccountMonitorConfig>({ enabled: false, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: GPT_ACCOUNT_MONITOR_MODEL, reasoning_effort: GPT_ACCOUNT_MONITOR_REASONING_EFFORT, prompt: '', expected_generation: 17, account_ids: [], run_on_start: true })
 +const savedConfig = ref<GPTAccountMonitorConfig | null>(null)
 +const scope = ref<'all' | 'selected'>('all')
 +const status = ref<GPTAccountMonitorStatus>({ enabled: false, running: false, last_run: null, next_run: null, message: '', total_accounts: 0, accounts: [] })
@@ -4751,14 +5167,14 @@ index 0000000..650bf40
 +let accountController: AbortController | undefined
 +
 +function snapshot(): GPTAccountMonitorConfig {
-+  return { ...form, model: form.model.trim(), prompt: form.prompt.trim(), account_ids: scope.value === 'all' ? [] : [...new Set(form.account_ids)].sort((a, b) => a - b) }
++  return { ...form, model: GPT_ACCOUNT_MONITOR_MODEL, reasoning_effort: GPT_ACCOUNT_MONITOR_REASONING_EFFORT, prompt: form.prompt.trim(), account_ids: scope.value === 'all' ? [] : [...new Set(form.account_ids)].sort((a, b) => a - b) }
 +}
 +function configFingerprint(config: GPTAccountMonitorConfig) {
-+  return JSON.stringify([config.enabled, config.interval_seconds, config.timeout_seconds, config.concurrency, config.model, config.prompt, config.expected_generation, [...config.account_ids].sort((a, b) => a - b), config.run_on_start])
++  return JSON.stringify([config.enabled, config.interval_seconds, config.timeout_seconds, config.concurrency, config.model, config.reasoning_effort, config.prompt, config.expected_generation, [...config.account_ids].sort((a, b) => a - b), config.run_on_start])
 +}
 +const dirty = computed(() => savedConfig.value !== null && (configFingerprint(snapshot()) !== configFingerprint(savedConfig.value) || scope.value !== (savedConfig.value.account_ids.length ? 'selected' : 'all')))
 +function applyConfig(value: GPTAccountMonitorConfig) {
-+  const normalized = { ...value, account_ids: [...(value.account_ids || [])].sort((a, b) => a - b) }
++  const normalized = { ...value, model: GPT_ACCOUNT_MONITOR_MODEL, reasoning_effort: GPT_ACCOUNT_MONITOR_REASONING_EFFORT, account_ids: [...(value.account_ids || [])].sort((a, b) => a - b) }
 +  Object.assign(form, normalized, { account_ids: [...normalized.account_ids] })
 +  scope.value = normalized.account_ids.length ? 'selected' : 'all'
 +  savedConfig.value = JSON.parse(JSON.stringify(normalized)) as GPTAccountMonitorConfig
@@ -4797,7 +5213,7 @@ index 0000000..650bf40
 +  for (const [value, min, max] of [[config.interval_seconds, 60, 86400], [config.timeout_seconds, 10, 300], [config.concurrency, 1, 10], [config.expected_generation, 1, 99]]) {
 +    if (!Number.isInteger(value) || value < min || value > max) throw new Error(tr('invalidConfig'))
 +  }
-+  if (!config.model || !config.prompt) throw new Error(tr('invalidConfig'))
++  if (!config.prompt) throw new Error(tr('invalidConfig'))
 +  if (scope.value === 'selected' && !config.account_ids.length) throw new Error(tr('chooseAccounts'))
 +}
 +async function save() {
@@ -4890,10 +5306,10 @@ index 0000000..650bf40
 +</style>
 diff --git a/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
 new file mode 100644
-index 0000000..5f47b13
+index 0000000..e9847f3
 --- /dev/null
 +++ b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,190 @@
 +import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import GPTAccountMonitorView from '../GPTAccountMonitorView.vue'
@@ -4913,10 +5329,10 @@ index 0000000..5f47b13
 +  useStepUp: () => ({ run: stepUpRun, onCancel }), isStepUpCancelled: () => false, isStepUpBlocked: () => false, stepUpBlockReason: () => '',
 +}))
 +
-+const config: GPTAccountMonitorConfig = { enabled: true, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: 'gpt-5.4', prompt: '不联网，不猜测，直接说出你知道的最新苹果手机。', expected_generation: 17, account_ids: [], run_on_start: true }
++const config: GPTAccountMonitorConfig = { enabled: true, interval_seconds: 1800, timeout_seconds: 90, concurrency: 3, model: 'gpt-6-astra', reasoning_effort: 'xhigh', prompt: '不联网，不猜测，直接说出你知道的最新苹果手机。', expected_generation: 17, account_ids: [], run_on_start: true }
 +const hostile = '<img src=x onerror=alert(1)>'
 +const status: GPTAccountMonitorStatus = { enabled: true, running: false, last_run: '2026-10-13T06:00:00Z', next_run: '2026-10-13T06:30:00Z', message: '', total_accounts: 3, accounts: [
-+  { account_id: 7, name: 'OAuth primary', proxy_name: 'Proxy A', checked_at: '2026-10-13T06:00:00Z', verdict: 'normal', answer: 'iPhone 17 Pro', message: '回答符合规则', model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: true },
++  { account_id: 7, name: 'OAuth primary', proxy_name: 'Proxy A', checked_at: '2026-10-13T06:00:00Z', verdict: 'normal', answer: 'iPhone 17 Pro', message: '回答符合规则', model: 'gpt-6-astra', reasoning_effort: 'xhigh', expected_generation: 17, schedulable: true, changed: true },
 +  { account_id: 8, name: 'OAuth other', proxy_name: 'Proxy B', checked_at: '2026-10-13T06:00:00Z', verdict: 'abnormal', answer: hostile, message: '回答不符合规则', model: 'gpt-5.4', expected_generation: 17, schedulable: false, changed: true },
 +  { account_id: 9, name: 'Proxy error', checked_at: null, verdict: 'error', message: '代理异常', model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: false },
 +] }
@@ -4943,6 +5359,22 @@ index 0000000..5f47b13
 +afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 +
 +describe('GPT account monitor management', () => {
++  it.each([undefined, 'low'])('keeps model and effort fixed when loading legacy effort %s', async (reasoningEffort) => {
++    getConfig.mockResolvedValue({ ...config, model: 'gpt-5.4', reasoning_effort: reasoningEffort })
++    const wrapper = mountView()
++    await flushPromises()
++    expect(wrapper.get('[data-testid=model]').text()).toBe('gpt-6-astra')
++    expect(wrapper.get('[data-testid=reasoning-effort]').text()).toBe('XHigh')
++    expect(wrapper.find('input[data-testid=model], select[data-testid=model], input[data-testid=reasoning-effort], select[data-testid=reasoning-effort]').exists()).toBe(false)
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeUndefined()
++    expect(saveConfig).not.toHaveBeenCalled()
++    await wrapper.get('[data-testid=interval]').setValue('3600')
++    await wrapper.get('[data-testid=config-form]').trigger('submit')
++    await flushPromises()
++    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6-astra', reasoning_effort: 'xhigh', interval_seconds: 3600 }), expect.any(AbortSignal))
++    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeUndefined()
++  })
++
 +  it('loads without mutations and only offers eligible OpenAI OAuth accounts', async () => {
 +    const wrapper = mountView()
 +    await flushPromises()
@@ -4970,7 +5402,7 @@ index 0000000..5f47b13
 +    await wrapper.get('[data-testid=config-form]').trigger('submit')
 +    await flushPromises()
 +    expect(stepUpRun).toHaveBeenCalledTimes(1)
-+    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ interval_seconds: 3600, account_ids: [7] }), expect.any(AbortSignal))
++    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6-astra', reasoning_effort: 'xhigh', interval_seconds: 3600, account_ids: [7] }), expect.any(AbortSignal))
 +    expect(wrapper.get('[data-testid=run]').attributes('disabled')).toBeUndefined()
 +    expect(showSuccess).toHaveBeenCalledWith('admin.gptAccountMonitor.saved')
 +    getConfig.mockResolvedValue(saveConfig.mock.calls[0][0])
@@ -5002,6 +5434,11 @@ index 0000000..5f47b13
 +    expect(wrapper.get('[data-testid=count-normal]').text()).toBe('1')
 +    expect(wrapper.get('[data-testid=count-abnormal]').text()).toBe('1')
 +    expect(wrapper.get('[data-testid=count-error]').text()).toBe('1')
++    expect(wrapper.findAll('[data-testid=result-model]').map(item => item.text())).toEqual([
++      'gpt-6-astra · XHigh · iPhone 17',
++      'gpt-5.4 · iPhone 17',
++      'gpt-5.4 · iPhone 17',
++    ])
 +    await wrapper.get('[data-testid=verdict-filter]').setValue('abnormal')
 +    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
 +    await wrapper.get('[data-testid=result-search]').setValue('no matching account')
