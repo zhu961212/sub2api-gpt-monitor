@@ -181,6 +181,421 @@ index fe0224a..b4fef09 100644
  	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
  	if err != nil {
  		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)
+diff --git a/backend/internal/handler/handler.go b/backend/internal/handler/handler.go
+index f712690..4c1b952 100644
+--- a/backend/internal/handler/handler.go
++++ b/backend/internal/handler/handler.go
+@@ -32,6 +32,7 @@ type AdminHandlers struct {
+ 	ErrorPassthrough       *admin.ErrorPassthroughHandler
+ 	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
+ 	Plugin                 *admin.PluginHandler
++	GPTAccountMonitor      *admin.GPTAccountMonitorHandler
+ 	APIKey                 *admin.AdminAPIKeyHandler
+ 	ScheduledTest          *admin.ScheduledTestHandler
+ 	Channel                *admin.ChannelHandler
+diff --git a/backend/internal/handler/wire.go b/backend/internal/handler/wire.go
+index e87d440..00f7f91 100644
+--- a/backend/internal/handler/wire.go
++++ b/backend/internal/handler/wire.go
+@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
+ 	ollamaCloudUsage *service.OllamaCloudUsageService,
+ 	opencodeGoUsage *service.OpenCodeGoUsageService,
+ 	claudeResetCredits *service.ClaudeResetCreditService,
++	gptAccountMonitorHandler *admin.GPTAccountMonitorHandler,
+ ) *AdminHandlers {
+ 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
+ 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
+@@ -82,6 +83,7 @@ func ProvideAdminHandlers(
+ 		ErrorPassthrough:       errorPassthroughHandler,
+ 		TLSFingerprintProfile:  tlsFingerprintProfileHandler,
+ 		Plugin:                 pluginHandler,
++		GPTAccountMonitor:      gptAccountMonitorHandler,
+ 		APIKey:                 apiKeyHandler,
+ 		ScheduledTest:          scheduledTestHandler,
+ 		Channel:                channelHandler,
+@@ -279,6 +281,7 @@ var ProviderSet = wire.NewSet(
+ 	admin.NewErrorPassthroughHandler,
+ 	admin.NewTLSFingerprintProfileHandler,
+ 	admin.NewPluginHandler,
++	admin.NewGPTAccountMonitorHandler,
+ 	admin.NewAdminAPIKeyHandler,
+ 	admin.NewScheduledTestHandler,
+ 	admin.NewChannelHandler,
+diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
+index 781928a..1ae3148 100644
+--- a/backend/internal/repository/account_repo.go
++++ b/backend/internal/repository/account_repo.go
+@@ -2689,6 +2689,73 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
+ 	return nil
+ }
+ 
++// SetGPTMonitorSchedulableIfMatch changes only the scheduling switch while both
++// the account and the proxy still match the snapshot that was actually probed.
++// Administrator edits, expiry, or a changed proxy invalidate the result.
++func (r *accountRepository) SetGPTMonitorSchedulableIfMatch(ctx context.Context, snapshot *service.Account, schedulable bool) (bool, error) {
++	now := time.Now()
++	if snapshot == nil || snapshot.ID <= 0 || snapshot.Platform != service.PlatformOpenAI ||
++		snapshot.Type != service.AccountTypeOAuth || snapshot.Status != service.StatusActive ||
++		snapshot.ParentAccountID != nil || snapshot.ProxyID == nil || snapshot.Proxy == nil ||
++		snapshot.Proxy.ID != *snapshot.ProxyID || snapshot.Proxy.Status != service.StatusActive ||
++		snapshot.Proxy.IsExpired(now) || (snapshot.ExpiresAt != nil && !snapshot.ExpiresAt.After(now)) {
++		return false, nil
++	}
++	proxy := snapshot.Proxy
++	proxyPredicates := []dbpredicate.Proxy{
++		dbproxy.IDEQ(*snapshot.ProxyID), dbproxy.UpdatedAtEQ(proxy.UpdatedAt),
++		dbproxy.ProtocolEQ(proxy.Protocol), dbproxy.HostEQ(proxy.Host), dbproxy.PortEQ(proxy.Port),
++		dbproxy.DeletedAtIsNil(), dbproxy.StatusEQ(service.StatusActive),
++		dbproxy.Or(dbproxy.ExpiresAtIsNil(), dbproxy.ExpiresAtGT(now)),
++	}
++	if proxy.Username == "" {
++		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.UsernameEQ(""), dbproxy.UsernameIsNil()))
++	} else {
++		proxyPredicates = append(proxyPredicates, dbproxy.UsernameEQ(proxy.Username))
++	}
++	if proxy.Password == "" {
++		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.PasswordEQ(""), dbproxy.PasswordIsNil()))
++	} else {
++		proxyPredicates = append(proxyPredicates, dbproxy.PasswordEQ(proxy.Password))
++	}
++	client := clientFromContext(ctx, r.client)
++	var tx *dbent.Tx
++	if dbent.TxFromContext(ctx) == nil {
++		var err error
++		tx, err = client.Tx(ctx)
++		if err != nil {
++			return false, err
++		}
++		defer func() { _ = tx.Rollback() }()
++		client = tx.Client()
++	}
++	count, err := client.Account.Update().Where(
++		dbaccount.IDEQ(snapshot.ID), dbaccount.UpdatedAtEQ(snapshot.UpdatedAt),
++		dbaccount.DeletedAtIsNil(),
++		dbaccount.PlatformEQ(service.PlatformOpenAI), dbaccount.TypeEQ(service.AccountTypeOAuth),
++		dbaccount.StatusEQ(service.StatusActive), dbaccount.ParentAccountIDIsNil(),
++		dbaccount.Or(dbaccount.ExpiresAtIsNil(), dbaccount.ExpiresAtGT(now)),
++		dbaccount.SchedulableEQ(snapshot.Schedulable), dbaccount.ProxyIDEQ(*snapshot.ProxyID),
++		dbaccount.HasProxyWith(proxyPredicates...),
++	).SetSchedulable(schedulable).Save(ctx)
++	if err != nil || count == 0 {
++		return false, err
++	}
++	id := snapshot.ID
++	if err := enqueueSchedulerOutbox(ctx, client, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
++		return false, err
++	}
++	if tx != nil {
++		if err := tx.Commit(); err != nil {
++			return false, err
++		}
++		// The scheduling switch and durable notification commit together. Both
++		// recovery and suspension also refresh the cache immediately after commit.
++		r.syncSchedulerAccountSnapshotDetached(ctx, id)
++	}
++	return true, nil
++}
++
+ func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
+ 	rows, err := r.sql.QueryContext(ctx, `
+ 		UPDATE accounts
+diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
+index f56fee1..8352ecd 100644
+--- a/backend/internal/repository/wire.go
++++ b/backend/internal/repository/wire.go
+@@ -130,6 +130,7 @@ var ProviderSet = wire.NewSet(
+ 	NewBatchImageQueue,
+ 	NewBatchImageDownloadLimiter,
+ 	NewLeaderLockCache,
++	NewGPTAccountMonitorStore,
+ 	ProvideSchedulerCache,
+ 	NewSchedulerOutboxRepository,
+ 	NewAuthCacheInvalidationOutboxRepository,
+diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
+index 315fc20..511aa43 100644
+--- a/backend/internal/server/routes/admin.go
++++ b/backend/internal/server/routes/admin.go
+@@ -45,6 +45,7 @@ func RegisterAdminRoutes(
+ 
+ 		// 账号管理
+ 		registerAccountRoutes(admin, h, stepUpAuth)
++		registerGPTAccountMonitorRoutes(admin, h)
+ 
+ 		// 公告管理
+ 		registerAnnouncementRoutes(admin, h)
+@@ -759,6 +760,14 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
+ 	}
+ }
+ 
++func registerGPTAccountMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
++	monitor := admin.Group("/gpt-account-monitor")
++	monitor.GET("/config", h.Admin.GPTAccountMonitor.GetConfig)
++	monitor.PUT("/config", h.Admin.GPTAccountMonitor.SaveConfig)
++	monitor.GET("/status", h.Admin.GPTAccountMonitor.Status)
++	monitor.POST("/run", h.Admin.GPTAccountMonitor.RunNow)
++}
++
+ func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+ 	plugins := admin.Group("/plugins")
+ 	{
+diff --git a/backend/internal/service/openai_oauth_service.go b/backend/internal/service/openai_oauth_service.go
+index 5eef594..b3eebc0 100644
+--- a/backend/internal/service/openai_oauth_service.go
++++ b/backend/internal/service/openai_oauth_service.go
+@@ -345,7 +345,18 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
+ 	}
+ 
+ 	var proxyURL string
+-	if account.ProxyID != nil && s.proxyRepo != nil {
++	if pinned, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++		// A monitor probe must refresh through exactly its checked account proxy.
++		// Missing/changed proxy state must never fall back to the direct network.
++		if pinned.URL == "" || account.ProxyID == nil || *account.ProxyID != pinned.ID || s.proxyRepo == nil {
++			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_UNAVAILABLE", "monitor account proxy is unavailable")
++		}
++		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
++		if err != nil || validateGPTMonitorProxy(proxy) != nil || proxy.ID != pinned.ID || proxy.URL() != pinned.URL || !proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
++			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_CHANGED", "monitor account proxy changed or is unavailable")
++		}
++		proxyURL = pinned.URL
++	} else if account.ProxyID != nil && s.proxyRepo != nil {
+ 		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
+ 		if err == nil && proxy != nil {
+ 			proxyURL = proxy.URL()
+diff --git a/backend/internal/service/openai_token_provider.go b/backend/internal/service/openai_token_provider.go
+index b10f52f..839181b 100644
+--- a/backend/internal/service/openai_token_provider.go
++++ b/backend/internal/service/openai_token_provider.go
+@@ -160,6 +160,11 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
+ 	if needsRefresh && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
+ 		if expiresAt != nil && !time.Now().Before(*expiresAt) {
+ 			const reason = "openai access_token expired and refresh_token is missing"
++			// A monitor's token can expire while waiting on the cache. Preserve
++			// scheduling for this inconclusive probe even after the initial check.
++			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++				return "", errors.New(reason)
++			}
+ 			// 永久故障：缺失 refresh_token 时账号无法自愈，必须立即从调度池剔除，
+ 			// 否则会被反复选中、每次都在 token 阶段直接返回错误，对用户呈现持续 502。
+ 			p.disableAccountMissingRefreshToken(account, reason)
+@@ -175,6 +180,12 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
+ 
+ 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
+ 		if err != nil {
++			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
++				// Refresh errors can contain provider bodies or proxy credentials.
++				// An inconclusive monitor must neither log them nor use a stale token.
++				p.metrics.refreshFailure.Add(1)
++				return "", errors.New("monitor OAuth refresh failed")
++			}
+ 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+ 				return "", err
+ 			}
+diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
+index ec3058d..6d1080e 100644
+--- a/backend/internal/service/wire.go
++++ b/backend/internal/service/wire.go
+@@ -118,6 +118,13 @@ func ProvideOpenAIOAuthService(
+ 	return svc
+ }
+ 
++// ProvideGPTAccountMonitorService starts the built-in scheduled OAuth probe.
++func ProvideGPTAccountMonitorService(accountRepo AccountRepository, gateway *OpenAIGatewayService, store GPTAccountMonitorStore, settings SettingRepository, cfg *config.Config) *GPTAccountMonitorService {
++	svc := NewGPTAccountMonitorService(accountRepo, gateway, store, settings, cfg)
++	svc.Start()
++	return svc
++}
++
+ // ProvideTokenRefreshService creates and starts TokenRefreshService
+ func ProvideTokenRefreshService(
+ 	accountRepo AccountRepository,
+@@ -937,6 +944,7 @@ var ProviderSet = wire.NewSet(
+ 	NewCRSSyncService,
+ 	ProvideUpdateService,
+ 	ProvideTokenRefreshService,
++	ProvideGPTAccountMonitorService,
+ 	wire.Bind(new(GrokOAuthReconciler), new(*TokenRefreshService)),
+ 	ProvideAccountExpiryService,
+ 	ProvideOpenAICodexVersionSyncService,
+diff --git a/deploy/.env.example b/deploy/.env.example
+index fa10e83..852d448 100644
+--- a/deploy/.env.example
++++ b/deploy/.env.example
+@@ -477,3 +477,21 @@ OPS_ENABLED=true
+ # Leave empty for direct connection (recommended for overseas servers)
+ # 留空表示直连（适用于海外服务器）
+ UPDATE_PROXY_URL=
++
++# -----------------------------------------------------------------------------
++# Built-in GPT OAuth Account Monitor (内置定时账号检查)
++# -----------------------------------------------------------------------------
++# 仅 OAuth 母账号；检查走各账号自己的代理，不介入普通用户请求。
++# 缺少有效代理、网络异常、鉴权失败时不修改调度；此问题为自定义检查规则。
++# Docker Compose 须将这些变量传入 sub2api 服务的 environment，单独写 .env 不会自动传入。
++# 管理页「GPT 账号检查」保存配置后，数据库配置优先于这些环境变量并自动生效。
++GPT_ACCOUNT_MONITOR_ENABLED=false
++GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS=1800
++GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS=90
++GPT_ACCOUNT_MONITOR_CONCURRENCY=3
++GPT_ACCOUNT_MONITOR_MODEL=gpt-5.4
++GPT_ACCOUNT_MONITOR_PROMPT=不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。
++GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION=17
++# 逗号分隔账号 ID，例如 12,34；留空表示全部符合条件的账号。
++GPT_ACCOUNT_MONITOR_ACCOUNT_IDS=
++GPT_ACCOUNT_MONITOR_RUN_ON_START=true
+diff --git a/deploy/config.example.yaml b/deploy/config.example.yaml
+index 7066f17..1c8bae2 100644
+--- a/deploy/config.example.yaml
++++ b/deploy/config.example.yaml
+@@ -1297,3 +1297,21 @@ image_storage:
+   presign_expiry_hours: 24
+   # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
+   max_download_bytes: 33554432
++
++# 内置 GPT OAuth 账号定时检查；与普通用户请求相互独立，无需插件或管理员 API Key。
++# 仅检查 active 的 OpenAI OAuth 母账号，包含已暂停调度的账号。
++# 检查请求强制使用账号绑定的有效代理；缺少代理或请求异常时保持调度状态。
++# 回答型号符合 expected_generation 则开启调度，否则关闭调度；该问题仅为自定义规则。
++gpt_account_monitor:
++  # 首次启动使用此处和环境变量的默认值；管理页保存后，数据库配置优先并自动生效。
++  # 后台菜单「GPT 账号检查」可修改配置、立即检查和查看最近结果。
++  enabled: false
++  interval_seconds: 1800
++  timeout_seconds: 90
++  concurrency: 3
++  model: "gpt-5.4"
++  prompt: "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
++  expected_generation: 17
++  # 空列表表示全部符合条件的账号；可填写 [12, 34]。
++  account_ids: []
++  run_on_start: true
+diff --git a/frontend/src/api/admin/index.ts b/frontend/src/api/admin/index.ts
+index 0616449..e7a3537 100644
+--- a/frontend/src/api/admin/index.ts
++++ b/frontend/src/api/admin/index.ts
+@@ -36,6 +36,7 @@ import riskControlAPI from './riskControl'
+ import adminComplianceAPI from './compliance'
+ import auditAPI from './audit'
+ import pluginsAPI from './plugins'
++import gptAccountMonitorAPI from './gptAccountMonitor'
+ 
+ /**
+  * Unified admin API object for convenient access
+@@ -73,7 +74,8 @@ export const adminAPI = {
+   riskControl: riskControlAPI,
+   compliance: adminComplianceAPI,
+   audit: auditAPI,
+-  plugins: pluginsAPI
++  plugins: pluginsAPI,
++  gptAccountMonitor: gptAccountMonitorAPI
+ }
+ 
+ export {
+@@ -109,7 +111,8 @@ export {
+   riskControlAPI,
+   adminComplianceAPI,
+   auditAPI,
+-  pluginsAPI
++  pluginsAPI,
++  gptAccountMonitorAPI
+ }
+ 
+ export default adminAPI
+diff --git a/frontend/src/components/layout/AppSidebar.vue b/frontend/src/components/layout/AppSidebar.vue
+index 1d20fef..31a82a5 100644
+--- a/frontend/src/components/layout/AppSidebar.vue
++++ b/frontend/src/components/layout/AppSidebar.vue
+@@ -793,6 +793,7 @@ const adminNavItems = computed((): NavItem[] => {
+     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
+     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
+     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
++    { path: '/admin/gpt-account-monitor', label: t('nav.gptAccountMonitor'), icon: SignalIcon },
+     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
+     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
+     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
+diff --git a/frontend/src/i18n/locales/en/admin/index.ts b/frontend/src/i18n/locales/en/admin/index.ts
+index b86114e..bc05f7d 100644
+--- a/frontend/src/i18n/locales/en/admin/index.ts
++++ b/frontend/src/i18n/locales/en/admin/index.ts
+@@ -7,6 +7,7 @@ import settings from './settings'
+ import audit from './audit'
+ import promptAudit from './promptAudit'
+ import plugins from './plugins'
++import gptAccountMonitor from './gptAccountMonitor'
+ 
+ export default {
+   ...overview,
+@@ -18,4 +19,5 @@ export default {
+   ...audit,
+   ...promptAudit,
+   ...plugins,
++  ...gptAccountMonitor,
+ }
+diff --git a/frontend/src/i18n/locales/en/common.ts b/frontend/src/i18n/locales/en/common.ts
+index 694dbb7..5f64f25 100644
+--- a/frontend/src/i18n/locales/en/common.ts
++++ b/frontend/src/i18n/locales/en/common.ts
+@@ -183,6 +183,7 @@ export default {
+     subscriptions: 'Subscriptions',
+     accounts: 'Accounts',
+     plugins: 'Plugins',
++    gptAccountMonitor: 'GPT Account Monitor',
+     proxies: 'Proxies',
+     redeemCodes: 'Redeem Codes',
+     ops: 'Ops',
+diff --git a/frontend/src/i18n/locales/zh/admin/index.ts b/frontend/src/i18n/locales/zh/admin/index.ts
+index b86114e..bc05f7d 100644
+--- a/frontend/src/i18n/locales/zh/admin/index.ts
++++ b/frontend/src/i18n/locales/zh/admin/index.ts
+@@ -7,6 +7,7 @@ import settings from './settings'
+ import audit from './audit'
+ import promptAudit from './promptAudit'
+ import plugins from './plugins'
++import gptAccountMonitor from './gptAccountMonitor'
+ 
+ export default {
+   ...overview,
+@@ -18,4 +19,5 @@ export default {
+   ...audit,
+   ...promptAudit,
+   ...plugins,
++  ...gptAccountMonitor,
+ }
+diff --git a/frontend/src/i18n/locales/zh/common.ts b/frontend/src/i18n/locales/zh/common.ts
+index d237724..91fe6d9 100644
+--- a/frontend/src/i18n/locales/zh/common.ts
++++ b/frontend/src/i18n/locales/zh/common.ts
+@@ -183,6 +183,7 @@ export default {
+     subscriptions: '订阅管理',
+     accounts: '账号管理',
+     plugins: '插件管理',
++    gptAccountMonitor: 'GPT 账号巡检',
+     proxies: 'IP管理',
+     redeemCodes: '兑换码',
+     ops: '运维监控',
+diff --git a/frontend/src/router/index.ts b/frontend/src/router/index.ts
+index 1881ff3..f7f8adb 100644
+--- a/frontend/src/router/index.ts
++++ b/frontend/src/router/index.ts
+@@ -525,6 +525,18 @@ const routes: RouteRecordRaw[] = [
+       descriptionKey: 'admin.accounts.description'
+     }
+   },
++  {
++    path: '/admin/gpt-account-monitor',
++    name: 'AdminGPTAccountMonitor',
++    component: () => import('@/views/admin/GPTAccountMonitorView.vue'),
++    meta: {
++      requiresAuth: true,
++      requiresAdmin: true,
++      title: 'GPT Account Monitor',
++      titleKey: 'admin.gptAccountMonitor.title',
++      descriptionKey: 'admin.gptAccountMonitor.description'
++    }
++  },
+   {
+     path: '/admin/plugins',
+     name: 'AdminPlugins',
 diff --git a/backend/internal/config/gpt_account_monitor_test.go b/backend/internal/config/gpt_account_monitor_test.go
 new file mode 100644
 index 0000000..5014944
@@ -615,114 +1030,367 @@ index 0000000..922dc5e
 +	w := gptMonitorRequest(gptMonitorTestRouter(NewGPTAccountMonitorHandler(nil)), http.MethodGet, "/status", "")
 +	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 +}
-diff --git a/backend/internal/handler/handler.go b/backend/internal/handler/handler.go
-index f712690..4c1b952 100644
---- a/backend/internal/handler/handler.go
-+++ b/backend/internal/handler/handler.go
-@@ -32,6 +32,7 @@ type AdminHandlers struct {
- 	ErrorPassthrough       *admin.ErrorPassthroughHandler
- 	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
- 	Plugin                 *admin.PluginHandler
-+	GPTAccountMonitor      *admin.GPTAccountMonitorHandler
- 	APIKey                 *admin.AdminAPIKeyHandler
- 	ScheduledTest          *admin.ScheduledTestHandler
- 	Channel                *admin.ChannelHandler
-diff --git a/backend/internal/handler/wire.go b/backend/internal/handler/wire.go
-index e87d440..00f7f91 100644
---- a/backend/internal/handler/wire.go
-+++ b/backend/internal/handler/wire.go
-@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
- 	ollamaCloudUsage *service.OllamaCloudUsageService,
- 	opencodeGoUsage *service.OpenCodeGoUsageService,
- 	claudeResetCredits *service.ClaudeResetCreditService,
-+	gptAccountMonitorHandler *admin.GPTAccountMonitorHandler,
- ) *AdminHandlers {
- 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
- 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
-@@ -82,6 +83,7 @@ func ProvideAdminHandlers(
- 		ErrorPassthrough:       errorPassthroughHandler,
- 		TLSFingerprintProfile:  tlsFingerprintProfileHandler,
- 		Plugin:                 pluginHandler,
-+		GPTAccountMonitor:      gptAccountMonitorHandler,
- 		APIKey:                 apiKeyHandler,
- 		ScheduledTest:          scheduledTestHandler,
- 		Channel:                channelHandler,
-@@ -279,6 +281,7 @@ var ProviderSet = wire.NewSet(
- 	admin.NewErrorPassthroughHandler,
- 	admin.NewTLSFingerprintProfileHandler,
- 	admin.NewPluginHandler,
-+	admin.NewGPTAccountMonitorHandler,
- 	admin.NewAdminAPIKeyHandler,
- 	admin.NewScheduledTestHandler,
- 	admin.NewChannelHandler,
-diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
-index 781928a..5b62385 100644
---- a/backend/internal/repository/account_repo.go
-+++ b/backend/internal/repository/account_repo.go
-@@ -2689,6 +2689,57 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
- 	return nil
- }
- 
-+// SetGPTMonitorSchedulableIfMatch changes only the scheduling switch while both
-+// the account and the proxy still match the snapshot that was actually probed.
-+// Administrator edits, expiry, or a changed proxy invalidate the result.
-+func (r *accountRepository) SetGPTMonitorSchedulableIfMatch(ctx context.Context, snapshot *service.Account, schedulable bool) (bool, error) {
-+	now := time.Now()
-+	if snapshot == nil || snapshot.ID <= 0 || snapshot.Platform != service.PlatformOpenAI ||
-+		snapshot.Type != service.AccountTypeOAuth || snapshot.Status != service.StatusActive ||
-+		snapshot.ParentAccountID != nil || snapshot.ProxyID == nil || snapshot.Proxy == nil ||
-+		snapshot.Proxy.ID != *snapshot.ProxyID || snapshot.Proxy.Status != service.StatusActive ||
-+		snapshot.Proxy.IsExpired(now) || (snapshot.ExpiresAt != nil && !snapshot.ExpiresAt.After(now)) {
-+		return false, nil
+diff --git a/backend/internal/repository/account_repo_gpt_monitor_queries.go b/backend/internal/repository/account_repo_gpt_monitor_queries.go
+new file mode 100644
+index 0000000..01cc004
+--- /dev/null
++++ b/backend/internal/repository/account_repo_gpt_monitor_queries.go
+@@ -0,0 +1,114 @@
++package repository
++
++import (
++	"context"
++	"database/sql"
++	"encoding/json"
++	"errors"
++	"fmt"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/lib/pq"
++)
++
++// Keep the candidate and status projections aligned with gptMonitorEligible.
++// schedulable is deliberately not a predicate: paused accounts need rechecks.
++const gptMonitorEligibleSQL = `
++	a.deleted_at IS NULL
++	AND a.id > 0
++	AND a.platform = 'openai'
++	AND a.type = 'oauth'
++	AND a.status = 'active'
++	AND a.parent_account_id IS NULL
++	AND (a.expires_at IS NULL OR a.expires_at > CURRENT_TIMESTAMP)
++`
++
++const gptMonitorAccountColumnsSQL = `
++	a.id, a.platform, a.type, a.status, a.schedulable,
++	a.expires_at, a.parent_account_id
++`
++
++// ListGPTMonitorCandidates uses a bounded keyset page without hydrating secrets
++// or relationships. A probe loads the full account only when its worker is ready.
++func (r *accountRepository) ListGPTMonitorCandidates(ctx context.Context, accountIDs []int64, afterID int64, limit int) ([]service.Account, error) {
++	if limit <= 0 {
++		return []service.Account{}, nil
 +	}
-+	proxy := snapshot.Proxy
-+	proxyPredicates := []dbpredicate.Proxy{
-+		dbproxy.IDEQ(*snapshot.ProxyID), dbproxy.UpdatedAtEQ(proxy.UpdatedAt),
-+		dbproxy.ProtocolEQ(proxy.Protocol), dbproxy.HostEQ(proxy.Host), dbproxy.PortEQ(proxy.Port),
-+		dbproxy.DeletedAtIsNil(), dbproxy.StatusEQ(service.StatusActive),
-+		dbproxy.Or(dbproxy.ExpiresAtIsNil(), dbproxy.ExpiresAtGT(now)),
++	if r == nil || r.sql == nil {
++		return nil, errors.New("GPT account monitor repository unavailable")
 +	}
-+	if proxy.Username == "" {
-+		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.UsernameEQ(""), dbproxy.UsernameIsNil()))
-+	} else {
-+		proxyPredicates = append(proxyPredicates, dbproxy.UsernameEQ(proxy.Username))
++	query := `SELECT ` + gptMonitorAccountColumnsSQL + `
++		FROM accounts AS a
++		WHERE ` + gptMonitorEligibleSQL + ` AND a.id > $1`
++	args := []any{afterID, limit}
++	if len(accountIDs) > 0 {
++		query += ` AND a.id = ANY($3)`
++		args = append(args, pq.Array(accountIDs))
 +	}
-+	if proxy.Password == "" {
-+		proxyPredicates = append(proxyPredicates, dbproxy.Or(dbproxy.PasswordEQ(""), dbproxy.PasswordIsNil()))
-+	} else {
-+		proxyPredicates = append(proxyPredicates, dbproxy.PasswordEQ(proxy.Password))
++	query += ` ORDER BY a.id ASC LIMIT $2`
++	rows, err := r.sql.QueryContext(ctx, query, args...)
++	if err != nil {
++		return nil, err
 +	}
-+	count, err := r.client.Account.Update().Where(
-+		dbaccount.IDEQ(snapshot.ID), dbaccount.UpdatedAtEQ(snapshot.UpdatedAt),
-+		dbaccount.DeletedAtIsNil(),
-+		dbaccount.PlatformEQ(service.PlatformOpenAI), dbaccount.TypeEQ(service.AccountTypeOAuth),
-+		dbaccount.StatusEQ(service.StatusActive), dbaccount.ParentAccountIDIsNil(),
-+		dbaccount.Or(dbaccount.ExpiresAtIsNil(), dbaccount.ExpiresAtGT(now)),
-+		dbaccount.SchedulableEQ(snapshot.Schedulable), dbaccount.ProxyIDEQ(*snapshot.ProxyID),
-+		dbaccount.HasProxyWith(proxyPredicates...),
-+	).SetSchedulable(schedulable).Save(ctx)
-+	if err != nil || count == 0 {
-+		return false, err
++	defer func() { _ = rows.Close() }()
++	accounts := make([]service.Account, 0)
++	for rows.Next() {
++		var account service.Account
++		if err := rows.Scan(&account.ID, &account.Platform, &account.Type, &account.Status, &account.Schedulable, &account.ExpiresAt, &account.ParentAccountID); err != nil {
++			return nil, err
++		}
++		accounts = append(accounts, account)
 +	}
-+	id := snapshot.ID
-+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
-+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue GPT monitor scheduling change failed: account=%d", id)
++	if err := rows.Err(); err != nil {
++		return nil, err
 +	}
-+	// Recovery and suspension both need an immediate cache update. Preserve
-+	// propagation even if the probe context is cancelled after the SQL write.
-+	r.syncSchedulerAccountSnapshotDetached(ctx, id)
-+	return true, nil
++	return accounts, nil
 +}
 +
- func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
- 	rows, err := r.sql.QueryContext(ctx, `
- 		UPDATE accounts
++// ListGPTMonitorAccounts returns the display fields and only the monitor's JSON
++// result. The service sorts the complete result to retain the latest 200 checks.
++func (r *accountRepository) ListGPTMonitorAccounts(ctx context.Context, accountIDs []int64) ([]service.Account, error) {
++	if r == nil || r.sql == nil {
++		return nil, errors.New("GPT account monitor repository unavailable")
++	}
++	query := `SELECT ` + gptMonitorAccountColumnsSQL + `,
++		a.name, p.name, a.extra -> 'gpt_account_monitor'
++		FROM accounts AS a
++		LEFT JOIN proxies AS p ON p.id = a.proxy_id AND p.deleted_at IS NULL
++		WHERE ` + gptMonitorEligibleSQL
++	var args []any
++	if len(accountIDs) > 0 {
++		query += ` AND a.id = ANY($1)`
++		args = append(args, pq.Array(accountIDs))
++	}
++	query += ` ORDER BY a.id ASC`
++	rows, err := r.sql.QueryContext(ctx, query, args...)
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = rows.Close() }()
++	accounts := make([]service.Account, 0)
++	for rows.Next() {
++		var account service.Account
++		var proxyName sql.NullString
++		var rawMonitor []byte
++		if err := rows.Scan(&account.ID, &account.Platform, &account.Type, &account.Status, &account.Schedulable, &account.ExpiresAt, &account.ParentAccountID, &account.Name, &proxyName, &rawMonitor); err != nil {
++			return nil, err
++		}
++		if proxyName.Valid {
++			account.Proxy = &service.Proxy{Name: proxyName.String}
++		}
++		if len(rawMonitor) > 0 {
++			var monitor any
++			if err := json.Unmarshal(rawMonitor, &monitor); err != nil {
++				return nil, fmt.Errorf("decode GPT account monitor result: %w", err)
++			}
++			account.Extra = map[string]any{"gpt_account_monitor": monitor}
++		}
++		accounts = append(accounts, account)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return accounts, nil
++}
+diff --git a/backend/internal/repository/account_repo_gpt_monitor_queries_test.go b/backend/internal/repository/account_repo_gpt_monitor_queries_test.go
+new file mode 100644
+index 0000000..4935507
+--- /dev/null
++++ b/backend/internal/repository/account_repo_gpt_monitor_queries_test.go
+@@ -0,0 +1,190 @@
++package repository
++
++import (
++	"context"
++	"database/sql/driver"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/DATA-DOG/go-sqlmock"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/lib/pq"
++	"github.com/stretchr/testify/require"
++)
++
++var gptMonitorCandidateTestColumns = []string{
++	"id", "platform", "type", "status", "schedulable", "expires_at", "parent_account_id",
++}
++
++func TestListGPTMonitorCandidatesProjectsBoundedEligiblePage(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		ids  []int64
++	}{
++		{name: "all eligible accounts"},
++		{name: "selected accounts", ids: []int64{19, 23}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			db, mock, err := sqlmock.New()
++			require.NoError(t, err)
++			t.Cleanup(func() { _ = db.Close() })
++			var query string
++			repo := newAccountRepositoryWithSQL(nil, captureQuerySQL{db: db, captured: &query}, nil)
++			expires := time.Now().Add(time.Hour)
++			args := []driver.Value{int64(17), 2}
++			if len(tc.ids) > 0 {
++				args = append(args, pq.Array(tc.ids))
++			}
++			mock.ExpectQuery("SELECT").WithArgs(args...).WillReturnRows(
++				sqlmock.NewRows(gptMonitorCandidateTestColumns).
++					AddRow(19, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, false, expires, nil).
++					AddRow(23, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, true, nil, nil)).RowsWillBeClosed()
++
++			accounts, err := repo.ListGPTMonitorCandidates(context.Background(), tc.ids, 17, 2)
++
++			require.NoError(t, err)
++			require.Len(t, accounts, 2)
++			require.Equal(t, int64(19), accounts[0].ID)
++			require.False(t, accounts[0].Schedulable, "disabled accounts must stay eligible for recovery")
++			require.Equal(t, expires, *accounts[0].ExpiresAt)
++			require.Nil(t, accounts[0].ParentAccountID)
++			require.Nil(t, accounts[0].Credentials)
++			require.Nil(t, accounts[0].Proxy)
++			require.Nil(t, accounts[0].Extra)
++			require.Nil(t, accounts[0].GroupIDs)
++			require.Nil(t, accounts[1].ExpiresAt)
++			normalized := normalizeSQLWhitespace(query)
++			requireGPTMonitorQueryEligibility(t, normalized)
++			require.Contains(t, normalized, "a.id > $1")
++			require.Contains(t, normalized, "ORDER BY a.id ASC LIMIT $2")
++			for _, heavy := range []string{"credentials", "extra", "JOIN", "OFFSET", "*"} {
++				require.NotContains(t, normalized, heavy)
++			}
++			if len(tc.ids) > 0 {
++				require.Contains(t, normalized, "a.id = ANY($3)")
++			} else {
++				require.NotContains(t, normalized, "ANY(")
++			}
++			require.NoError(t, mock.ExpectationsWereMet())
++		})
++	}
++}
++
++func TestListGPTMonitorCandidatesRejectsNonPositivePageSize(t *testing.T) {
++	repo := &accountRepository{}
++	for _, limit := range []int{0, -1} {
++		accounts, err := repo.ListGPTMonitorCandidates(context.Background(), nil, 0, limit)
++		require.NoError(t, err)
++		require.Empty(t, accounts)
++	}
++}
++
++func TestListGPTMonitorAccountsProjectsOnlyStatusDisplayData(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		ids  []int64
++	}{
++		{name: "all eligible accounts"},
++		{name: "selected accounts", ids: []int64{19, 23}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			db, mock, err := sqlmock.New()
++			require.NoError(t, err)
++			t.Cleanup(func() { _ = db.Close() })
++			var query string
++			repo := newAccountRepositoryWithSQL(nil, captureQuerySQL{db: db, captured: &query}, nil)
++			args := []driver.Value{}
++			if len(tc.ids) > 0 {
++				args = append(args, pq.Array(tc.ids))
++			}
++			columns := append(append([]string{}, gptMonitorCandidateTestColumns...), "name", "proxy_name", "monitor")
++			mock.ExpectQuery("SELECT").WithArgs(args...).WillReturnRows(
++				sqlmock.NewRows(columns).
++					AddRow(19, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, false, nil, nil, "paused account", "proxy display name", []byte(`{"verdict":"abnormal","checked_at":"2026-10-13T00:00:00Z"}`)).
++					AddRow(23, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, true, nil, nil, "pending account", nil, nil)).RowsWillBeClosed()
++
++			accounts, err := repo.ListGPTMonitorAccounts(context.Background(), tc.ids)
++
++			require.NoError(t, err)
++			require.Len(t, accounts, 2)
++			require.Equal(t, "paused account", accounts[0].Name)
++			require.False(t, accounts[0].Schedulable)
++			require.Equal(t, &service.Proxy{Name: "proxy display name"}, accounts[0].Proxy)
++			require.Equal(t, map[string]any{"gpt_account_monitor": map[string]any{"verdict": "abnormal", "checked_at": "2026-10-13T00:00:00Z"}}, accounts[0].Extra)
++			require.Nil(t, accounts[0].Credentials)
++			require.Nil(t, accounts[0].Groups)
++			require.Nil(t, accounts[1].Proxy)
++			require.Nil(t, accounts[1].Extra)
++			normalized := normalizeSQLWhitespace(query)
++			requireGPTMonitorQueryEligibility(t, normalized)
++			projection, _, ok := strings.Cut(normalized, " FROM ")
++			require.True(t, ok)
++			require.Equal(t, "SELECT a.id, a.platform, a.type, a.status, a.schedulable, a.expires_at, a.parent_account_id , a.name, p.name, a.extra -> 'gpt_account_monitor'", projection)
++			require.Contains(t, normalized, "LEFT JOIN proxies AS p ON p.id = a.proxy_id AND p.deleted_at IS NULL")
++			for _, heavy := range []string{"credentials", "username", "password", "host", "protocol", "account_groups", "LIMIT", "OFFSET", "*"} {
++				require.NotContains(t, normalized, heavy)
++			}
++			if len(tc.ids) > 0 {
++				require.Contains(t, normalized, "a.id = ANY($1)")
++			} else {
++				require.NotContains(t, normalized, "ANY(")
++			}
++			require.NoError(t, mock.ExpectationsWereMet())
++		})
++	}
++}
++
++func requireGPTMonitorQueryEligibility(t *testing.T, query string) {
++	t.Helper()
++	_, where, ok := strings.Cut(query, " WHERE ")
++	require.True(t, ok)
++	for _, predicate := range []string{
++		"a.deleted_at IS NULL", "a.platform = 'openai'", "a.type = 'oauth'",
++		"a.status = 'active'", "a.parent_account_id IS NULL",
++		"a.expires_at IS NULL OR a.expires_at > CURRENT_TIMESTAMP",
++	} {
++		require.Contains(t, where, predicate)
++	}
++	require.NotContains(t, where, "schedulable", "paused accounts need to remain visible and eligible for recovery")
++}
++
++func TestGPTMonitorQueriesPropagateDatabaseErrors(t *testing.T) {
++	for _, status := range []bool{false, true} {
++		for _, mode := range []string{"query", "scan", "iteration"} {
++			name := "candidates " + mode
++			if status {
++				name = "status " + mode
++			}
++			t.Run(name, func(t *testing.T) {
++				db, mock, err := sqlmock.New()
++				require.NoError(t, err)
++				t.Cleanup(func() { _ = db.Close() })
++				repo := newAccountRepositoryWithSQL(nil, db, nil)
++				expected := errors.New("database failed")
++				query := mock.ExpectQuery("SELECT")
++				switch mode {
++				case "query":
++					query.WillReturnError(expected)
++				case "scan":
++					query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("invalid")).RowsWillBeClosed()
++				case "iteration":
++					query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(19).RowError(0, expected)).RowsWillBeClosed()
++				}
++				var accounts []service.Account
++				if status {
++					accounts, err = repo.ListGPTMonitorAccounts(context.Background(), nil)
++				} else {
++					accounts, err = repo.ListGPTMonitorCandidates(context.Background(), nil, 0, 200)
++				}
++				require.Error(t, err)
++				require.Nil(t, accounts)
++				if mode != "scan" {
++					require.ErrorIs(t, err, expected)
++				}
++				require.NoError(t, mock.ExpectationsWereMet())
++			})
++		}
++	}
++}
+diff --git a/backend/internal/repository/account_repo_gpt_monitor_result.go b/backend/internal/repository/account_repo_gpt_monitor_result.go
+new file mode 100644
+index 0000000..7915820
+--- /dev/null
++++ b/backend/internal/repository/account_repo_gpt_monitor_result.go
+@@ -0,0 +1,33 @@
++package repository
++
++import (
++	"context"
++	"encoding/json"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++)
++
++// UpdateGPTMonitorResult saves display-only observations without rebuilding
++// scheduler buckets or loading a credential-bearing account snapshot. Leaving
++// updated_at unchanged also prevents observations from invalidating an in-flight
++// scheduling CAS; actual scheduling changes still update it and the outbox.
++func (r *accountRepository) UpdateGPTMonitorResult(ctx context.Context, id int64, result service.GPTAccountMonitorResult) error {
++	payload, err := json.Marshal(map[string]any{"gpt_account_monitor": result})
++	if err != nil {
++		return err
++	}
++	res, err := clientFromContext(ctx, r.client).ExecContext(ctx,
++		"UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb WHERE id = $2 AND deleted_at IS NULL",
++		string(payload), id)
++	if err != nil {
++		return err
++	}
++	affected, err := res.RowsAffected()
++	if err != nil {
++		return err
++	}
++	if affected == 0 {
++		return service.ErrAccountNotFound
++	}
++	return nil
++}
 diff --git a/backend/internal/repository/account_repo_gpt_monitor_test.go b/backend/internal/repository/account_repo_gpt_monitor_test.go
 new file mode 100644
-index 0000000..2216bae
+index 0000000..e7e14f7
 --- /dev/null
 +++ b/backend/internal/repository/account_repo_gpt_monitor_test.go
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,204 @@
 +package repository
 +
 +import (
@@ -792,13 +1460,17 @@ index 0000000..2216bae
 +			t.Cleanup(func() { _ = client.Close() })
 +			cache := &gptMonitorCacheRecorder{}
 +			repo := newAccountRepositoryWithSQL(client, db, cache)
++			mock.ExpectBegin()
 +			mock.ExpectExec("scheduling mutation").WillReturnResult(sqlmock.NewResult(0, tc.rows))
 +			if tc.rows == 1 {
 +				mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).WillReturnResult(sqlmock.NewResult(1, 1))
++				mock.ExpectCommit()
 +				mock.ExpectQuery(`SELECT .* FROM "accounts"`).WillReturnRows(
 +					sqlmock.NewRows([]string{"id", "platform", "type", "status", "schedulable"}).
 +						AddRow(17, service.PlatformOpenAI, service.AccountTypeOAuth, service.StatusActive, tc.target))
 +				mock.ExpectQuery(`SELECT .* FROM "account_groups"`).WillReturnRows(sqlmock.NewRows([]string{"account_id", "group_id"}))
++			} else {
++				mock.ExpectRollback()
 +			}
 +			snapshot := gptMonitorAccountSnapshot()
 +			snapshot.Schedulable = !tc.target
@@ -874,11 +1546,54 @@ index 0000000..2216bae
 +	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 +	t.Cleanup(func() { _ = client.Close() })
 +	repo := newAccountRepositoryWithSQL(client, db, &gptMonitorCacheRecorder{})
++	mock.ExpectBegin()
 +	mock.ExpectExec(`UPDATE "accounts"`).WillReturnError(errors.New("database unavailable"))
++	mock.ExpectRollback()
 +	changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), gptMonitorAccountSnapshot(), false)
 +	require.Error(t, err)
 +	require.False(t, changed)
 +	require.NoError(t, mock.ExpectationsWereMet())
++}
++
++func TestGPTMonitorSchedulingRollsBackWhenNotificationFails(t *testing.T) {
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
++	t.Cleanup(func() { _ = client.Close() })
++	cache := &gptMonitorCacheRecorder{}
++	repo := newAccountRepositoryWithSQL(client, db, cache)
++	mock.ExpectBegin()
++	mock.ExpectExec(`UPDATE "accounts"`).WillReturnResult(sqlmock.NewResult(0, 1))
++	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).WillReturnError(errors.New("outbox unavailable"))
++	mock.ExpectRollback()
++	changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), gptMonitorAccountSnapshot(), false)
++	require.Error(t, err)
++	require.False(t, changed)
++	require.Empty(t, cache.accounts, "an uncommitted change must never reach the scheduler cache")
++	require.NoError(t, mock.ExpectationsWereMet())
++}
++
++func TestGPTMonitorResultDoesNotRebuildSchedulerOrInvalidateSnapshot(t *testing.T) {
++	for _, count := range []int64{0, 1} {
++		db, mock, err := sqlmock.New()
++		require.NoError(t, err)
++		t.Cleanup(func() { _ = db.Close() })
++		client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
++		t.Cleanup(func() { _ = client.Close() })
++		cache := &gptMonitorCacheRecorder{}
++		repo := newAccountRepositoryWithSQL(client, db, cache)
++		mock.ExpectExec(regexp.QuoteMeta("UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb WHERE id = $2 AND deleted_at IS NULL")).
++			WithArgs(sqlmock.AnyArg(), int64(17)).WillReturnResult(sqlmock.NewResult(0, count))
++		err = repo.UpdateGPTMonitorResult(context.Background(), 17, service.GPTAccountMonitorResult{Verdict: "normal", Schedulable: true})
++		if count == 0 {
++			require.ErrorIs(t, err, service.ErrAccountNotFound)
++		} else {
++			require.NoError(t, err)
++		}
++		require.Empty(t, cache.accounts)
++		require.NoError(t, mock.ExpectationsWereMet(), "saving observations needs only one write, with no transaction, cache read or outbox")
++	}
 +}
 diff --git a/backend/internal/repository/gpt_account_monitor_store.go b/backend/internal/repository/gpt_account_monitor_store.go
 new file mode 100644
@@ -1176,51 +1891,12 @@ index 0000000..c4fe9bb
 +	_, err = s.NextRun(ctx, "config")
 +	require.Error(t, err)
 +}
-diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
-index f56fee1..8352ecd 100644
---- a/backend/internal/repository/wire.go
-+++ b/backend/internal/repository/wire.go
-@@ -130,6 +130,7 @@ var ProviderSet = wire.NewSet(
- 	NewBatchImageQueue,
- 	NewBatchImageDownloadLimiter,
- 	NewLeaderLockCache,
-+	NewGPTAccountMonitorStore,
- 	ProvideSchedulerCache,
- 	NewSchedulerOutboxRepository,
- 	NewAuthCacheInvalidationOutboxRepository,
-diff --git a/backend/internal/server/routes/admin.go b/backend/internal/server/routes/admin.go
-index 315fc20..511aa43 100644
---- a/backend/internal/server/routes/admin.go
-+++ b/backend/internal/server/routes/admin.go
-@@ -45,6 +45,7 @@ func RegisterAdminRoutes(
- 
- 		// 账号管理
- 		registerAccountRoutes(admin, h, stepUpAuth)
-+		registerGPTAccountMonitorRoutes(admin, h)
- 
- 		// 公告管理
- 		registerAnnouncementRoutes(admin, h)
-@@ -759,6 +760,14 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
- 	}
- }
- 
-+func registerGPTAccountMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
-+	monitor := admin.Group("/gpt-account-monitor")
-+	monitor.GET("/config", h.Admin.GPTAccountMonitor.GetConfig)
-+	monitor.PUT("/config", h.Admin.GPTAccountMonitor.SaveConfig)
-+	monitor.GET("/status", h.Admin.GPTAccountMonitor.Status)
-+	monitor.POST("/run", h.Admin.GPTAccountMonitor.RunNow)
-+}
-+
- func registerPluginRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
- 	plugins := admin.Group("/plugins")
- 	{
 diff --git a/backend/internal/service/gpt_account_monitor_management.go b/backend/internal/service/gpt_account_monitor_management.go
 new file mode 100644
-index 0000000..61eb078
+index 0000000..06e4b16
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_management.go
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,211 @@
 +package service
 +
 +import (
@@ -1378,7 +2054,12 @@ index 0000000..61eb078
 +	s.mu.Unlock()
 +	out.Enabled = cfg.Enabled
 +	out.Accounts = make([]GPTAccountMonitorStatusAccount, 0)
-+	accounts, err := s.repo.ListByPlatform(ctx, PlatformOpenAI)
++	var accounts []Account
++	if repo, ok := s.repo.(gptMonitorReadRepository); ok {
++		accounts, err = repo.ListGPTMonitorAccounts(ctx, cfg.AccountIDs)
++	} else {
++		accounts, err = s.repo.ListByPlatform(ctx, PlatformOpenAI)
++	}
 +	if err != nil {
 +		return out, err
 +	}
@@ -1584,10 +2265,10 @@ index 0000000..da720a0
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe.go b/backend/internal/service/gpt_account_monitor_probe.go
 new file mode 100644
-index 0000000..f9ae959
+index 0000000..21a6dde
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe.go
-@@ -0,0 +1,321 @@
+@@ -0,0 +1,323 @@
 +package service
 +
 +import (
@@ -1602,6 +2283,7 @@ index 0000000..f9ae959
 +	"net/http"
 +	"net/url"
 +	"regexp"
++	"strconv"
 +	"strings"
 +	"time"
 +	"unicode"
@@ -1702,6 +2384,10 @@ index 0000000..f9ae959
 +	return account, token, nil
 +}
 +
++// Keep the generation in one contiguous capture. Removing punctuation or
++// whitespace from the whole answer would turn "iPhone 1.7" into "iPhone 17".
++var gptMonitorAnswerPattern = regexp.MustCompile(`^(?:(?:(?:我知道的|据我所知)?\s*(?:最新的?|苹果最新的?)?\s*(?:苹果手机|手机|型号)\s*(?:是|为)?|(?:最新的?|苹果最新的?)\s*(?:是|为)?)\s*[:：]?\s*)?[*_\x60"'“‘]*(?:苹果(?:公司)?(?:的)?\s*|apple\s*)?(?:iphone|苹果)\s*([1-9][0-9]?)(?:\s*(?:pro(?:\s*max)?|plus|e))?(?:\s*系列)?$`)
++
 +// GPTAccountAnswerMatches accepts only a short, affirmative model name.
 +// Merely mentioning 17 (e.g. "not iPhone 17" or "16; maybe 17") must not pass.
 +func GPTAccountAnswerMatches(answer string, generation int) bool {
@@ -1713,17 +2399,14 @@ index 0000000..f9ae959
 +		if r >= '０' && r <= '９' {
 +			return r - '０' + '0'
 +		}
-+		if unicode.IsSpace(r) || strings.ContainsRune("*`_\"'“”‘’。.!！,，:：", r) {
-+			return -1
++		if unicode.IsSpace(r) {
++			return ' '
 +		}
 +		return r
 +	}, answer)
-+	pattern := fmt.Sprintf(`^(?:(?:我知道的|据我所知)?(?:最新的?|苹果最新的?)?(?:苹果手机|手机|型号)(?:是|为)?|(?:最新的?|苹果最新的?)(?:是|为)?)?(?:苹果(?:公司)?(?:的)?|apple)?(?:iphone|苹果)%d(?:pro(?:max)?|plus|e)?(?:系列)?$`, generation)
-+	// Common Chinese short form has no duplicated brand.
-+	if answer == fmt.Sprintf("苹果%d", generation) {
-+		return true
-+	}
-+	return regexp.MustCompile(pattern).MatchString(answer)
++	answer = strings.Trim(answer, " *`_\"'“”‘’。.!！,，:：")
++	match := gptMonitorAnswerPattern.FindStringSubmatch(answer)
++	return len(match) == 2 && match[1] == strconv.Itoa(generation)
 +}
 +
 +func validGPTMonitorProxyURL(raw string) (*url.URL, error) {
@@ -1798,7 +2481,7 @@ index 0000000..f9ae959
 +	reader := bufio.NewScanner(limited)
 +	reader.Buffer(make([]byte, 4096), 256*1024)
 +	var data []string
-+	var delta strings.Builder
++	var deltaBytes int
 +	sawTool := false
 +	consume := func() (string, bool, error) {
 +		if limited.N <= 0 {
@@ -1840,8 +2523,8 @@ index 0000000..f9ae959
 +		case "error", "response.failed", "response.incomplete":
 +			return "", false, errors.New("上游响应失败或未完成")
 +		case "response.output_text.delta":
-+			delta.WriteString(event.Delta)
-+			if delta.Len() > 32768 {
++			deltaBytes += len(event.Delta)
++			if deltaBytes > 32768 {
 +				return "", false, errors.New("回答超过长度限制")
 +			}
 +		case "response.completed":
@@ -1911,10 +2594,10 @@ index 0000000..f9ae959
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe_test.go b/backend/internal/service/gpt_account_monitor_probe_test.go
 new file mode 100644
-index 0000000..659a43e
+index 0000000..831c3ca
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe_test.go
-@@ -0,0 +1,384 @@
+@@ -0,0 +1,440 @@
 +package service
 +
 +import (
@@ -1957,6 +2640,46 @@ index 0000000..659a43e
 +	}
 +}
 +
++func TestGPTMonitorAnswerKeepsGenerationBoundaries(t *testing.T) {
++	for _, answer := range []string{
++		"iPhone 1.7", "iPhone 1 7", "iPhone 1**7",
++	} {
++		if GPTAccountAnswerMatches(answer, 17) {
++			t.Errorf("ambiguous or malformed model accepted: %q", answer)
++		}
++	}
++	for _, answer := range []string{
++		"“iPhone １７”", "Apple iPhone 17", "最新的是 **iPhone 17**",
++	} {
++		if !GPTAccountAnswerMatches(answer, 17) {
++			t.Errorf("unambiguous model rejected: %q", answer)
++		}
++	}
++}
++
++func BenchmarkGPTMonitorAnswerMatches(b *testing.B) {
++	for _, answer := range []string{"iPhone 17", "**iPhone 17 Pro Max**。", "最新的苹果手机是 iPhone 17", "iPhone 16"} {
++		b.Run(answer, func(b *testing.B) {
++			b.ReportAllocs()
++			for b.Loop() {
++				GPTAccountAnswerMatches(answer, 17)
++			}
++		})
++	}
++}
++
++func BenchmarkGPTMonitorReadResponse(b *testing.B) {
++	delta, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "delta": strings.Repeat("x", 32768)})
++	input := "data: " + string(delta) + "\n\n" + gptMonitorCompleted("iPhone 17")
++	b.ReportAllocs()
++	b.SetBytes(int64(len(input)))
++	for b.Loop() {
++		if _, err := readGPTMonitorResponse(strings.NewReader(input)); err != nil {
++			b.Fatal(err)
++		}
++	}
++}
++
 +func TestGPTMonitorCompletedResponseOnly(t *testing.T) {
 +	for _, input := range []string{gptMonitorCompleted("iPhone 17"), strings.ReplaceAll(gptMonitorCompleted("iPhone 17"), "\n", "\r\n"), strings.TrimSpace(gptMonitorCompleted("iPhone 17"))} {
 +		answer, err := readGPTMonitorResponse(strings.NewReader(input))
@@ -1984,6 +2707,22 @@ index 0000000..659a43e
 +	}
 +	if _, err := readGPTMonitorResponse(strings.NewReader(strings.Repeat(": comment padding\n", 140000) + gptMonitorCompleted("iPhone17"))); err == nil {
 +		t.Fatal("oversized response accepted")
++	}
++}
++
++func TestGPTMonitorResponseDeltaLimitIsCumulative(t *testing.T) {
++	deltaEvent := func(text string) string {
++		raw, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "delta": text})
++		return "data: " + string(raw) + "\n\n"
++	}
++	atLimit := deltaEvent(strings.Repeat("x", 16384)) + deltaEvent(strings.Repeat("y", 16384))
++	if answer, err := readGPTMonitorResponse(strings.NewReader(atLimit + gptMonitorCompleted("iPhone 17"))); err != nil || answer != "iPhone 17" {
++		t.Fatalf("valid delta byte limit rejected: answer=%q err=%v", answer, err)
++	}
++	for _, overflow := range []string{deltaEvent("x"), deltaEvent("汉")} {
++		if _, err := readGPTMonitorResponse(strings.NewReader(atLimit + overflow + gptMonitorCompleted("iPhone 17"))); err == nil {
++			t.Fatal("cumulative delta byte limit exceeded without error")
++		}
 +	}
 +}
 +
@@ -2299,12 +3038,178 @@ index 0000000..659a43e
 +		})
 +	}
 +}
+diff --git a/backend/internal/service/gpt_account_monitor_regression_test.go b/backend/internal/service/gpt_account_monitor_regression_test.go
+new file mode 100644
+index 0000000..1e8170d
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_regression_test.go
+@@ -0,0 +1,142 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++type gptMonitorMutableRepo struct {
++	*gptMonitorRepoStub
++	mutations int
++}
++
++func (r *gptMonitorMutableRepo) SetGPTMonitorSchedulableIfMatch(_ context.Context, snapshot *Account, value bool) (bool, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	for i := range r.accounts {
++		if r.accounts[i].ID == snapshot.ID && r.accounts[i].Schedulable == snapshot.Schedulable {
++			r.accounts[i].Schedulable = value
++			r.writes[snapshot.ID] = value
++			r.mutations++
++			return true, nil
++		}
++	}
++	return false, nil
++}
++
++func TestGPTAccountMonitorSameAccountSuspendsRechecksAndRecovers(t *testing.T) {
++	s, base, store := gptMonitorFixture()
++	repo := &gptMonitorMutableRepo{gptMonitorRepoStub: base}
++	s.repo = repo
++	s.cfg.AccountIDs = []int64{1}
++	for _, step := range []struct {
++		answer      string
++		err         error
++		schedulable bool
++		verdict     string
++		changed     bool
++		mutations   int
++	}{
++		{"iPhone 16", nil, false, "abnormal", true, 1},
++		{"", errors.New("temporary network failure"), false, "error", false, 1},
++		{"iPhone 17 Pro", nil, true, "normal", true, 2},
++		{"iPhone 17", nil, true, "normal", false, 2},
++	} {
++		s.probe = func(_ context.Context, id int64, _, _ string) (*Account, string, error) {
++			repo.mu.Lock()
++			defer repo.mu.Unlock()
++			snapshot := repo.accounts[0]
++			require.Equal(t, snapshot.ID, id)
++			return &snapshot, step.answer, step.err
++		}
++		store.next = time.Time{}
++		require.Equal(t, 30*time.Minute, s.runCycle(context.Background()))
++		require.Equal(t, step.schedulable, repo.accounts[0].Schedulable)
++		require.Equal(t, step.verdict, repo.results[1].Verdict)
++		require.Equal(t, step.changed, repo.results[1].Changed)
++		require.Equal(t, step.mutations, repo.mutations)
++	}
++}
++
++type gptMonitorPagedRepo struct {
++	*gptMonitorRepoStub
++	cursors      []int64
++	statusReads  int
++	resultWrites int
++	pageErr      error
++}
++
++func (r *gptMonitorPagedRepo) ListByPlatform(context.Context, string) ([]Account, error) {
++	panic("monitor must use lightweight reads")
++}
++
++func (r *gptMonitorPagedRepo) ListGPTMonitorCandidates(_ context.Context, ids []int64, afterID int64, limit int) ([]Account, error) {
++	r.cursors = append(r.cursors, afterID)
++	if r.pageErr != nil {
++		return nil, r.pageErr
++	}
++	var out []Account
++	for _, a := range r.accounts {
++		if a.ID > afterID {
++			out = append(out, a)
++			if len(out) == limit {
++				break
++			}
++		}
++	}
++	return out, nil
++}
++
++func (r *gptMonitorPagedRepo) ListGPTMonitorAccounts(context.Context, []int64) ([]Account, error) {
++	r.statusReads++
++	return r.accounts, nil
++}
++
++func (r *gptMonitorPagedRepo) UpdateGPTMonitorResult(ctx context.Context, id int64, result GPTAccountMonitorResult) error {
++	r.resultWrites++
++	return r.gptMonitorRepoStub.UpdateExtra(ctx, id, map[string]any{"gpt_account_monitor": result})
++}
++
++func TestGPTAccountMonitorUsesBoundedPagesAndLightweightStatus(t *testing.T) {
++	s, base, _ := gptMonitorFixture()
++	base.accounts = nil
++	for id := int64(1); id <= 451; id++ {
++		base.accounts = append(base.accounts, Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: false})
++	}
++	repo := &gptMonitorPagedRepo{gptMonitorRepoStub: base}
++	s.repo = repo
++	var visited []int64
++	err := s.eachCandidate(context.Background(), nil, func(a Account) bool {
++		visited = append(visited, a.ID)
++		return true
++	})
++	require.NoError(t, err)
++	require.Len(t, visited, 451)
++	require.Equal(t, []int64{0, 200, 400}, repo.cursors)
++	status, err := s.Status(context.Background())
++	require.NoError(t, err)
++	require.Equal(t, 451, status.TotalAccounts)
++	require.Len(t, status.Accounts, 200)
++	require.Equal(t, 1, repo.statusReads)
++	s.saveResult(context.Background(), 1, GPTAccountMonitorResult{Verdict: "normal"})
++	require.Equal(t, 1, repo.resultWrites)
++	require.Zero(t, base.listCalls)
++}
++
++func TestGPTAccountMonitorFailedPageDoesNotAdvanceSharedSchedule(t *testing.T) {
++	s, base, store := gptMonitorFixture()
++	repo := &gptMonitorPagedRepo{gptMonitorRepoStub: base, pageErr: errors.New("database unavailable")}
++	s.repo = repo
++	s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++		t.Error("probe must not run after a failed page")
++		return nil, "", nil
++	}
++	require.Equal(t, 30*time.Second, s.runCycle(context.Background()))
++	require.True(t, store.next.IsZero())
++	require.True(t, store.released)
++	require.Empty(t, base.writes)
++}
+diff --git a/backend/internal/service/gpt_account_monitor_repository.go b/backend/internal/service/gpt_account_monitor_repository.go
+new file mode 100644
+index 0000000..9a2e1a2
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_repository.go
+@@ -0,0 +1,12 @@
++package service
++
++import "context"
++
++// gptMonitorReadRepository keeps recurring scans and status polling independent
++// of credential, proxy-secret, and account-group hydration. Empty accountIDs
++// means every eligible account. Disabled scheduling must not exclude an account:
++// a subsequent healthy probe needs to be able to recover it.
++type gptMonitorReadRepository interface {
++	ListGPTMonitorCandidates(ctx context.Context, accountIDs []int64, afterID int64, limit int) ([]Account, error)
++	ListGPTMonitorAccounts(ctx context.Context, accountIDs []int64) ([]Account, error)
++}
 diff --git a/backend/internal/service/gpt_account_monitor_service.go b/backend/internal/service/gpt_account_monitor_service.go
 new file mode 100644
-index 0000000..4bdf8e7
+index 0000000..252db08
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service.go
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,518 @@
 +package service
 +
 +import (
@@ -2334,6 +3239,10 @@ index 0000000..4bdf8e7
 +	SetGPTMonitorSchedulableIfMatch(context.Context, *Account, bool) (bool, error)
 +}
 +
++type gptMonitorResultRepository interface {
++	UpdateGPTMonitorResult(context.Context, int64, GPTAccountMonitorResult) error
++}
++
 +type gptAccountProbe func(context.Context, int64, string, string) (*Account, string, error)
 +
 +// GPTAccountMonitorResult is stored under account.extra.gpt_account_monitor.
@@ -2360,7 +3269,7 @@ index 0000000..4bdf8e7
 +	stopOnce     sync.Once
 +	cycleMu      sync.Mutex
 +	mu           sync.Mutex
-+	managementMu sync.Mutex
++	managementMu sync.RWMutex
 +	cancel       context.CancelFunc
 +	activeCancel context.CancelFunc
 +	done         chan struct{}
@@ -2605,17 +3514,6 @@ index 0000000..4bdf8e7
 +	s.state.Message = "正在巡检"
 +	s.mu.Unlock()
 +	defer func() { s.mu.Lock(); s.state.Running = false; s.mu.Unlock() }()
-+	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
-+	accounts, err := s.repo.ListByPlatform(listCtx, PlatformOpenAI)
-+	listCancel()
-+	if err != nil {
-+		s.logError("account listing failed")
-+		return retry
-+	}
-+	selected := make(map[int64]bool, len(cfg.AccountIDs))
-+	for _, id := range cfg.AccountIDs {
-+		selected[id] = true
-+	}
 +	jobs := make(chan Account)
 +	var wg sync.WaitGroup
 +	for i := 0; i < cfg.Concurrency; i++ {
@@ -2631,21 +3529,24 @@ index 0000000..4bdf8e7
 +		}()
 +	}
 +	count := 0
-+	for _, a := range accounts {
-+		if !gptMonitorEligible(&a) || (len(selected) > 0 && !selected[a.ID]) {
-+			continue
-+		}
-+		if ctx.Err() != nil {
-+			break
-+		}
++	err = s.eachCandidate(ctx, cfg.AccountIDs, func(a Account) bool {
 +		select {
 +		case <-ctx.Done():
++			return false
 +		case jobs <- a:
 +			count++
++			return true
 +		}
++	})
++	if err != nil {
++		cancel()
 +	}
 +	close(jobs)
 +	wg.Wait()
++	if err != nil {
++		s.logError("account listing failed")
++		return retry
++	}
 +	if ctx.Err() != nil {
 +		return retry
 +	}
@@ -2660,6 +3561,61 @@ index 0000000..4bdf8e7
 +	s.setMessage(fmt.Sprintf("本轮巡检完成，共 %d 个账号", count))
 +	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] scan complete: accounts=%d next_run_in=%ds", count, cfg.IntervalSeconds)
 +	return interval
++}
++
++// Fetch only a bounded page of account identities. Credentials and the current
++// proxy are loaded by the probe immediately before use, never for the full scan.
++func (s *GPTAccountMonitorService) eachCandidate(ctx context.Context, ids []int64, visit func(Account) bool) error {
++	selected := make(map[int64]bool, len(ids))
++	for _, id := range ids {
++		selected[id] = true
++	}
++	consume := func(accounts []Account) bool {
++		for _, a := range accounts {
++			if ctx.Err() != nil {
++				return false
++			}
++			if gptMonitorEligible(&a) && (len(selected) == 0 || selected[a.ID]) && !visit(a) {
++				return false
++			}
++		}
++		return true
++	}
++	if repo, ok := s.repo.(gptMonitorReadRepository); ok {
++		const pageSize = 200
++		var afterID int64
++		for ctx.Err() == nil {
++			readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
++			accounts, err := repo.ListGPTMonitorCandidates(readCtx, ids, afterID, pageSize)
++			cancel()
++			if err != nil {
++				return err
++			}
++			if len(accounts) == 0 {
++				return nil
++			}
++			lastID := accounts[len(accounts)-1].ID
++			if lastID <= afterID {
++				return fmt.Errorf("monitor account cursor did not advance")
++			}
++			if !consume(accounts) {
++				return ctx.Err()
++			}
++			afterID = lastID
++			if len(accounts) < pageSize {
++				return nil
++			}
++		}
++		return ctx.Err()
++	}
++	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
++	accounts, err := s.repo.ListByPlatform(readCtx, PlatformOpenAI)
++	cancel()
++	if err != nil {
++		return err
++	}
++	consume(accounts)
++	return ctx.Err()
 +}
 +
 +func gptMonitorEligible(a *Account) bool {
@@ -2702,8 +3658,8 @@ index 0000000..4bdf8e7
 +	}
 +	writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 +	defer writeCancel()
-+	s.managementMu.Lock()
-+	defer s.managementMu.Unlock()
++	s.managementMu.RLock()
++	defer s.managementMu.RUnlock()
 +	current, configErr := s.GetConfig(writeCtx)
 +	if configErr != nil || !current.Enabled || gptMonitorConfigHash(current) != gptMonitorConfigHash(cfg) {
 +		return
@@ -2744,7 +3700,13 @@ index 0000000..4bdf8e7
 +	}
 +	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 +	defer cancel()
-+	if err := s.repo.UpdateExtra(ctx, id, map[string]any{"gpt_account_monitor": result}); err != nil {
++	var err error
++	if repo, ok := s.repo.(gptMonitorResultRepository); ok {
++		err = repo.UpdateGPTMonitorResult(ctx, id, result)
++	} else {
++		err = s.repo.UpdateExtra(ctx, id, map[string]any{"gpt_account_monitor": result})
++	}
++	if err != nil {
 +		s.logError(fmt.Sprintf("account=%d result persistence failed", id))
 +	}
 +	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] account=%d verdict=%s schedulable=%t changed=%t message=%s", id, result.Verdict, result.Schedulable, result.Changed, result.Message)
@@ -2976,155 +3938,28 @@ index 0000000..b1e9475
 +	require.Nil(t, s.done)
 +	require.Zero(t, r.listCalls)
 +}
-diff --git a/backend/internal/service/openai_oauth_service.go b/backend/internal/service/openai_oauth_service.go
-index 5eef594..b3eebc0 100644
---- a/backend/internal/service/openai_oauth_service.go
-+++ b/backend/internal/service/openai_oauth_service.go
-@@ -345,7 +345,18 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
- 	}
- 
- 	var proxyURL string
--	if account.ProxyID != nil && s.proxyRepo != nil {
-+	if pinned, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
-+		// A monitor probe must refresh through exactly its checked account proxy.
-+		// Missing/changed proxy state must never fall back to the direct network.
-+		if pinned.URL == "" || account.ProxyID == nil || *account.ProxyID != pinned.ID || s.proxyRepo == nil {
-+			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_UNAVAILABLE", "monitor account proxy is unavailable")
-+		}
-+		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-+		if err != nil || validateGPTMonitorProxy(proxy) != nil || proxy.ID != pinned.ID || proxy.URL() != pinned.URL || !proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
-+			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_CHANGED", "monitor account proxy changed or is unavailable")
-+		}
-+		proxyURL = pinned.URL
-+	} else if account.ProxyID != nil && s.proxyRepo != nil {
- 		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
- 		if err == nil && proxy != nil {
- 			proxyURL = proxy.URL()
-diff --git a/backend/internal/service/openai_token_provider.go b/backend/internal/service/openai_token_provider.go
-index b10f52f..839181b 100644
---- a/backend/internal/service/openai_token_provider.go
-+++ b/backend/internal/service/openai_token_provider.go
-@@ -160,6 +160,11 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
- 	if needsRefresh && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
- 		if expiresAt != nil && !time.Now().Before(*expiresAt) {
- 			const reason = "openai access_token expired and refresh_token is missing"
-+			// A monitor's token can expire while waiting on the cache. Preserve
-+			// scheduling for this inconclusive probe even after the initial check.
-+			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
-+				return "", errors.New(reason)
-+			}
- 			// 永久故障：缺失 refresh_token 时账号无法自愈，必须立即从调度池剔除，
- 			// 否则会被反复选中、每次都在 token 阶段直接返回错误，对用户呈现持续 502。
- 			p.disableAccountMissingRefreshToken(account, reason)
-@@ -175,6 +180,12 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
- 
- 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
- 		if err != nil {
-+			if _, monitor := ctx.Value(gptMonitorProxyContextKey{}).(gptMonitorPinnedProxy); monitor {
-+				// Refresh errors can contain provider bodies or proxy credentials.
-+				// An inconclusive monitor must neither log them nor use a stale token.
-+				p.metrics.refreshFailure.Add(1)
-+				return "", errors.New("monitor OAuth refresh failed")
-+			}
- 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
- 				return "", err
- 			}
-diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
-index ec3058d..6d1080e 100644
---- a/backend/internal/service/wire.go
-+++ b/backend/internal/service/wire.go
-@@ -118,6 +118,13 @@ func ProvideOpenAIOAuthService(
- 	return svc
- }
- 
-+// ProvideGPTAccountMonitorService starts the built-in scheduled OAuth probe.
-+func ProvideGPTAccountMonitorService(accountRepo AccountRepository, gateway *OpenAIGatewayService, store GPTAccountMonitorStore, settings SettingRepository, cfg *config.Config) *GPTAccountMonitorService {
-+	svc := NewGPTAccountMonitorService(accountRepo, gateway, store, settings, cfg)
-+	svc.Start()
-+	return svc
-+}
-+
- // ProvideTokenRefreshService creates and starts TokenRefreshService
- func ProvideTokenRefreshService(
- 	accountRepo AccountRepository,
-@@ -937,6 +944,7 @@ var ProviderSet = wire.NewSet(
- 	NewCRSSyncService,
- 	ProvideUpdateService,
- 	ProvideTokenRefreshService,
-+	ProvideGPTAccountMonitorService,
- 	wire.Bind(new(GrokOAuthReconciler), new(*TokenRefreshService)),
- 	ProvideAccountExpiryService,
- 	ProvideOpenAICodexVersionSyncService,
-diff --git a/deploy/.env.example b/deploy/.env.example
-index fa10e83..852d448 100644
---- a/deploy/.env.example
-+++ b/deploy/.env.example
-@@ -477,3 +477,21 @@ OPS_ENABLED=true
- # Leave empty for direct connection (recommended for overseas servers)
- # 留空表示直连（适用于海外服务器）
- UPDATE_PROXY_URL=
-+
-+# -----------------------------------------------------------------------------
-+# Built-in GPT OAuth Account Monitor (内置定时账号检查)
-+# -----------------------------------------------------------------------------
-+# 仅 OAuth 母账号；检查走各账号自己的代理，不介入普通用户请求。
-+# 缺少有效代理、网络异常、鉴权失败时不修改调度；此问题为自定义检查规则。
-+# Docker Compose 须将这些变量传入 sub2api 服务的 environment，单独写 .env 不会自动传入。
-+# 管理页「GPT 账号检查」保存配置后，数据库配置优先于这些环境变量并自动生效。
-+GPT_ACCOUNT_MONITOR_ENABLED=false
-+GPT_ACCOUNT_MONITOR_INTERVAL_SECONDS=1800
-+GPT_ACCOUNT_MONITOR_TIMEOUT_SECONDS=90
-+GPT_ACCOUNT_MONITOR_CONCURRENCY=3
-+GPT_ACCOUNT_MONITOR_MODEL=gpt-5.4
-+GPT_ACCOUNT_MONITOR_PROMPT=不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。
-+GPT_ACCOUNT_MONITOR_EXPECTED_GENERATION=17
-+# 逗号分隔账号 ID，例如 12,34；留空表示全部符合条件的账号。
-+GPT_ACCOUNT_MONITOR_ACCOUNT_IDS=
-+GPT_ACCOUNT_MONITOR_RUN_ON_START=true
-diff --git a/deploy/config.example.yaml b/deploy/config.example.yaml
-index 7066f17..1c8bae2 100644
---- a/deploy/config.example.yaml
-+++ b/deploy/config.example.yaml
-@@ -1297,3 +1297,21 @@ image_storage:
-   presign_expiry_hours: 24
-   # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
-   max_download_bytes: 33554432
-+
-+# 内置 GPT OAuth 账号定时检查；与普通用户请求相互独立，无需插件或管理员 API Key。
-+# 仅检查 active 的 OpenAI OAuth 母账号，包含已暂停调度的账号。
-+# 检查请求强制使用账号绑定的有效代理；缺少代理或请求异常时保持调度状态。
-+# 回答型号符合 expected_generation 则开启调度，否则关闭调度；该问题仅为自定义规则。
-+gpt_account_monitor:
-+  # 首次启动使用此处和环境变量的默认值；管理页保存后，数据库配置优先并自动生效。
-+  # 后台菜单「GPT 账号检查」可修改配置、立即检查和查看最近结果。
-+  enabled: false
-+  interval_seconds: 1800
-+  timeout_seconds: 90
-+  concurrency: 3
-+  model: "gpt-5.4"
-+  prompt: "不联网，不猜测，直接说出你知道的最新苹果手机。只回答手机型号，不要解释。"
-+  expected_generation: 17
-+  # 空列表表示全部符合条件的账号；可填写 [12, 34]。
-+  account_ids: []
-+  run_on_start: true
 diff --git a/deploy/gpt-account-monitor/README.md b/deploy/gpt-account-monitor/README.md
 new file mode 100644
-index 0000000..e9eb3c0
+index 0000000..5c2b97f
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/README.md
-@@ -0,0 +1,73 @@
-+# Sub2API 0.2.15：GPT 账号巡检管理页
+@@ -0,0 +1,89 @@
++# Sub2API 0.2.15：GPT 账号巡检管理页 v2
 +
-+安装包：`sub2api-0.2.15-gpt-monitor-ui.tar.gz`。基于上游提交 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，包含 Linux amd64、arm64 程序。
++本地安装包：`sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz`。基于上游提交 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，构建标记为 `ab80abc-gpt-monitor-ui-v2`，包含 Linux amd64、arm64 程序。
 +
 +这是内置管理页，直接替换现有容器中的程序。无需插件、公钥、管理员 API Key 或新增容器；普通用户请求继续使用原有转发流程。脚本保留当前镜像，仅重建指定的应用服务，重建时应用会短暂中断。
++
++已安装 v1 的部署，请先按下文“从 v1 升级”回滚，再解压 v2，避免覆盖正在挂载执行的程序。
++
++v2 按账号 ID 每页 200 个读取巡检所需字段，状态查询只加载页面展示字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
 +
 +## 三步安装
 +
 +1. 将安装包放到**原 Docker Compose 部署目录**，在该目录解压：
 +
 +   ```sh
-+   tar -xzf sub2api-0.2.15-gpt-monitor-ui.tar.gz
++   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz
 +   ```
 +
 +2. 在同一目录执行。第一个参数是原 Compose 文件，第二个是服务名，可按实际名称替换：
@@ -3137,9 +3972,21 @@ index 0000000..e9eb3c0
 +
 +3. 浏览器强制刷新后台，打开左侧 **GPT 账号巡检**，或直接访问 `/admin/gpt-account-monitor`。检查默认关闭；在页面保存并启用，然后点击“立即检查”查看结果。
 +
-+页面可修改间隔、超时、并发、模型、问题、目标 iPhone 代数及账号范围。页面保存的配置写入数据库，优先于环境变量与配置文件，自动生效，无需为每次修改重启容器。默认间隔 30 分钟、代数 17；问题按你指定的规则检查，并不代表通用智力测量。
++页面可修改间隔、超时、并发、模型、问题、目标 iPhone 代数及账号范围。页面保存的配置写入数据库，优先于环境变量与配置文件，自动生效，无需为每次修改重启容器。默认间隔 30 分钟，继续使用完整回答符合 iPhone 17 型号规则即正常的固定判断；目标代数不会随日期自动更新。这是按你指定的回答规则检查，并不代表通用智力测量。
 +
 +仅处理启用状态的独立 OpenAI OAuth 账号，包含关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用及已过期账号。每个账号必须绑定启用且未过期的代理，检测和必要的令牌刷新使用该账号代理。缺少有效代理、网络或认证失败时保留调度状态。有效完整回答符合目标型号则开启调度，不符合则关闭，之后继续复检。
++
++## 从 v1 升级
++
++不要直接将 v2 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
++
++```sh
++sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
++```
++
++确认回滚成功后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.v1.yml.bak` 和 `gpt-monitor-patch-v1`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。
++
++然后按上述“三步安装”解压 v2 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，再备份旧文件并手动安装 v2，保留原命令全部选项。
 +
 +## 后续启动和回滚
 +
@@ -3183,12 +4030,12 @@ index 0000000..e9eb3c0
 +   docker compose -p 原项目名 --env-file 原环境文件 -f 原文件一.yml -f 原文件二.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build sub2api
 +   ```
 +
-+3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
++3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
 +
-+安装脚本已通过模拟 Docker 命令验证；交付前未连接你的实际 Docker、数据库或账号。
++安装脚本通过模拟 Docker 命令验证；未连接你的实际 Docker、数据库或真实账号，真实账号巡检与部署效果尚未验证。本地交付不代表已发布或已部署到服务器。
 diff --git a/deploy/gpt-account-monitor/apply.sh b/deploy/gpt-account-monitor/apply.sh
 new file mode 100644
-index 0000000..d8b8581
+index 0000000..c6f1f95
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/apply.sh
 @@ -0,0 +1,89 @@
@@ -3232,7 +4079,7 @@ index 0000000..d8b8581
 +current_version=$(base_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取现有程序版本；未修改容器'
 +version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
 +[ "$version" = '0.2.15' ] || fail '本安装包仅适用于当前运行版本 0.2.15；未修改容器'
-+case "$current_version" in *'commit: ab80abc-gpt-monitor-ui-v1,'*) fail '当前程序已包含此管理页版本，无需重复安装' ;; esac
++case "$current_version" in *'commit: ab80abc-gpt-monitor-ui-v2,'*) fail '当前程序已包含此管理页版本，无需重复安装' ;; esac
 +image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
 +case "$image_id" in sha256:*) ;; *) fail '无法确认当前容器的镜像 ID' ;; esac
 +platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
@@ -3274,7 +4121,7 @@ index 0000000..d8b8581
 +  attempt=$((attempt + 1))
 +  installed_version=$(docker compose -f "$compose_file" -f "$override_file" exec -T "$service" /app/sub2api --version 2>&1) || installed_version=''
 +  case "$installed_version" in
-+    *'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1,'*) verified=true; break ;;
++    *'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,'*) verified=true; break ;;
 +  esac
 +  sleep 2
 +done
@@ -3311,10 +4158,10 @@ index 0000000..f37d2cf
 +printf '此前检查修改的账号调度开关不会自动还原，请按需在账号管理中调整。\n'
 diff --git a/deploy/gpt-account-monitor/test_scripts.py b/deploy/gpt-account-monitor/test_scripts.py
 new file mode 100644
-index 0000000..9b0ca79
+index 0000000..b2b8714
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/test_scripts.py
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,209 @@
 +"""Run deployment-script tests with a fake docker command; no daemon is used."""
 +import hashlib
 +import os
@@ -3363,9 +4210,9 @@ index 0000000..9b0ca79
 +      config) exit 0 ;;
 +      exec)
 +        if [ -f "$MOCK_STATE" ] && [ "$(cat "$MOCK_STATE")" = patch ]; then
-+          printf 'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v1, built: test)\n'
++          printf 'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2, built: test)\n'
 +        else
-+          printf 'Sub2API %s (commit: ab80abc, built: test)\n' "$MOCK_VERSION"
++          printf 'Sub2API %s (commit: %s, built: test)\n' "$MOCK_VERSION" "$MOCK_COMMIT"
 +        fi
 +        exit 0
 +        ;;
@@ -3419,6 +4266,7 @@ index 0000000..9b0ca79
 +            "MOCK_STATE": shell_path(self.root / "state"),
 +            "MOCK_COMPOSE_OK": "true",
 +            "MOCK_VERSION": "0.2.15",
++            "MOCK_COMMIT": "ab80abc",
 +            "MOCK_PLATFORM": "linux/amd64",
 +            "MOCK_CONTAINER_ID": "a" * 64,
 +        })
@@ -3479,6 +4327,20 @@ index 0000000..9b0ca79
 +        result = self.run_script()
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertEqual(self.calls(), [])
++
++    def test_existing_v2_stops_before_recreate(self):
++        self.env["MOCK_COMMIT"] = "ab80abc-gpt-monitor-ui-v2"
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("当前程序已包含此管理页版本", result.stderr)
++        self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_v1_marker_does_not_trigger_v2_duplicate_guard(self):
++        self.env["MOCK_COMMIT"] = "ab80abc-gpt-monitor-ui-v1"
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertEqual(sum("|up|" in line for line in self.calls()), 1)
 +
 +    def test_existing_override_is_not_overwritten(self):
 +        override = self.root / "docker-compose.gpt-monitor.yml"
@@ -3567,50 +4429,6 @@ index 0000000..6d98387
 +  return (await apiClient.post<{ queued: boolean; message: string }>(`${base}/run`, undefined, { signal })).data
 +}
 +export default { getConfig, saveConfig, getStatus, run }
-diff --git a/frontend/src/api/admin/index.ts b/frontend/src/api/admin/index.ts
-index 0616449..e7a3537 100644
---- a/frontend/src/api/admin/index.ts
-+++ b/frontend/src/api/admin/index.ts
-@@ -36,6 +36,7 @@ import riskControlAPI from './riskControl'
- import adminComplianceAPI from './compliance'
- import auditAPI from './audit'
- import pluginsAPI from './plugins'
-+import gptAccountMonitorAPI from './gptAccountMonitor'
- 
- /**
-  * Unified admin API object for convenient access
-@@ -73,7 +74,8 @@ export const adminAPI = {
-   riskControl: riskControlAPI,
-   compliance: adminComplianceAPI,
-   audit: auditAPI,
--  plugins: pluginsAPI
-+  plugins: pluginsAPI,
-+  gptAccountMonitor: gptAccountMonitorAPI
- }
- 
- export {
-@@ -109,7 +111,8 @@ export {
-   riskControlAPI,
-   adminComplianceAPI,
-   auditAPI,
--  pluginsAPI
-+  pluginsAPI,
-+  gptAccountMonitorAPI
- }
- 
- export default adminAPI
-diff --git a/frontend/src/components/layout/AppSidebar.vue b/frontend/src/components/layout/AppSidebar.vue
-index 1d20fef..31a82a5 100644
---- a/frontend/src/components/layout/AppSidebar.vue
-+++ b/frontend/src/components/layout/AppSidebar.vue
-@@ -793,6 +793,7 @@ const adminNavItems = computed((): NavItem[] => {
-     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
-     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
-     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
-+    { path: '/admin/gpt-account-monitor', label: t('nav.gptAccountMonitor'), icon: SignalIcon },
-     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
-     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
-     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
 diff --git a/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
 new file mode 100644
 index 0000000..2775f7c
@@ -3652,36 +4470,6 @@ index 0000000..2775f7c
 +    localTime: 'Times use your browser’s time zone. Status refreshes every 5 seconds while this page is visible.',
 +  }
 +}
-diff --git a/frontend/src/i18n/locales/en/admin/index.ts b/frontend/src/i18n/locales/en/admin/index.ts
-index b86114e..bc05f7d 100644
---- a/frontend/src/i18n/locales/en/admin/index.ts
-+++ b/frontend/src/i18n/locales/en/admin/index.ts
-@@ -7,6 +7,7 @@ import settings from './settings'
- import audit from './audit'
- import promptAudit from './promptAudit'
- import plugins from './plugins'
-+import gptAccountMonitor from './gptAccountMonitor'
- 
- export default {
-   ...overview,
-@@ -18,4 +19,5 @@ export default {
-   ...audit,
-   ...promptAudit,
-   ...plugins,
-+  ...gptAccountMonitor,
- }
-diff --git a/frontend/src/i18n/locales/en/common.ts b/frontend/src/i18n/locales/en/common.ts
-index 694dbb7..5f64f25 100644
---- a/frontend/src/i18n/locales/en/common.ts
-+++ b/frontend/src/i18n/locales/en/common.ts
-@@ -183,6 +183,7 @@ export default {
-     subscriptions: 'Subscriptions',
-     accounts: 'Accounts',
-     plugins: 'Plugins',
-+    gptAccountMonitor: 'GPT Account Monitor',
-     proxies: 'Proxies',
-     redeemCodes: 'Redeem Codes',
-     ops: 'Ops',
 diff --git a/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
 new file mode 100644
 index 0000000..7020c96
@@ -3723,59 +4511,6 @@ index 0000000..7020c96
 +    localTime: '时间按浏览器本地时区显示；页面可见时每 5 秒刷新。',
 +  }
 +}
-diff --git a/frontend/src/i18n/locales/zh/admin/index.ts b/frontend/src/i18n/locales/zh/admin/index.ts
-index b86114e..bc05f7d 100644
---- a/frontend/src/i18n/locales/zh/admin/index.ts
-+++ b/frontend/src/i18n/locales/zh/admin/index.ts
-@@ -7,6 +7,7 @@ import settings from './settings'
- import audit from './audit'
- import promptAudit from './promptAudit'
- import plugins from './plugins'
-+import gptAccountMonitor from './gptAccountMonitor'
- 
- export default {
-   ...overview,
-@@ -18,4 +19,5 @@ export default {
-   ...audit,
-   ...promptAudit,
-   ...plugins,
-+  ...gptAccountMonitor,
- }
-diff --git a/frontend/src/i18n/locales/zh/common.ts b/frontend/src/i18n/locales/zh/common.ts
-index d237724..91fe6d9 100644
---- a/frontend/src/i18n/locales/zh/common.ts
-+++ b/frontend/src/i18n/locales/zh/common.ts
-@@ -183,6 +183,7 @@ export default {
-     subscriptions: '订阅管理',
-     accounts: '账号管理',
-     plugins: '插件管理',
-+    gptAccountMonitor: 'GPT 账号巡检',
-     proxies: 'IP管理',
-     redeemCodes: '兑换码',
-     ops: '运维监控',
-diff --git a/frontend/src/router/index.ts b/frontend/src/router/index.ts
-index 1881ff3..f7f8adb 100644
---- a/frontend/src/router/index.ts
-+++ b/frontend/src/router/index.ts
-@@ -525,6 +525,18 @@ const routes: RouteRecordRaw[] = [
-       descriptionKey: 'admin.accounts.description'
-     }
-   },
-+  {
-+    path: '/admin/gpt-account-monitor',
-+    name: 'AdminGPTAccountMonitor',
-+    component: () => import('@/views/admin/GPTAccountMonitorView.vue'),
-+    meta: {
-+      requiresAuth: true,
-+      requiresAdmin: true,
-+      title: 'GPT Account Monitor',
-+      titleKey: 'admin.gptAccountMonitor.title',
-+      descriptionKey: 'admin.gptAccountMonitor.description'
-+    }
-+  },
-   {
-     path: '/admin/plugins',
-     name: 'AdminPlugins',
 diff --git a/frontend/src/views/admin/GPTAccountMonitorView.vue b/frontend/src/views/admin/GPTAccountMonitorView.vue
 new file mode 100644
 index 0000000..650bf40

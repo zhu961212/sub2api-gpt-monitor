@@ -1,7 +1,12 @@
-Built-in GPT account monitor with native admin page; baseline Sub2API 0.2.15.
-Backend: config, probe, scheduling, management API, Redis lease/CAS, server cleanup tests passed.
-Frontend: native page tests, pending state, sidebar/router/i18n, TypeScript, ESLint, production build passed.
-Docker scripts: 7 mocked-Docker tests passed; no real Docker deployment performed.
-Linux amd64 and arm64: cross-compiled with embedded frontend; not executed on the target server.
-No live GPT account or proxy was contacted. Original business routing and plugin protocol unchanged.
-Build marker: ab80abc-gpt-monitor-ui-v1; version remains 0.2.15.
+Built-in GPT account monitor v2; baseline Sub2API 0.2.15.
+Build marker: ab80abc-gpt-monitor-ui-v2. Date: 2026-10-13.
+Backend: targeted monitor service, repository, config, handler and server tests passed.
+Regression: same account suspends, stays suspended on network error, recovers, then avoids redundant scheduling writes.
+Queries: 200-account keyset pages; display-only status projection; paused accounts remain eligible.
+Mutations: scheduling CAS and outbox commit atomically; observation persistence performs one write without scheduler cache churn.
+Frontend: 7 monitor page tests and 3 locale completeness tests passed. Frontend source and existing embedded build unchanged in this iteration.
+Deployment: 9 fake Docker tests passed, including v2 repeat-install refusal and v1 marker compatibility.
+Answer benchmark: plain model answer 24646 -> 564.8 ns/op; allocations 34678 -> 48 B/op (local microbenchmark, not end-to-end latency).
+Patch: checked against upstream baseline using an isolated Git index.
+Linux amd64 and arm64: cross-compiled with embedded frontend, ELF architecture verified; not executed on a target server.
+No live GPT account, proxy, database, or Docker deployment was contacted. Validation recorded before GitHub publication; no target deployment performed.

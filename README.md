@@ -1,4 +1,4 @@
-# Sub2API GPT 账号巡检（内置管理页补丁）
+# Sub2API GPT 账号巡检（宿主补丁 v2）
 
 适用于 **Sub2API v0.2.15 + Docker Compose**。把巡检功能和管理页面直接加入主程序，无需安装插件或新增巡检容器。
 
@@ -19,21 +19,34 @@ iPhone 17 是固定回答规则，不会随日期自动更新，也不等价于�
 
 ## 在服务器安装
 
-安装包在 [Releases](https://github.com/zhu961212/sub2api-gpt-monitor/releases/tag/v0.2.15-gpt-monitor-ui)，包含 Linux amd64 和 arm64。
+安装包在 [v2 Release](https://github.com/zhu961212/sub2api-gpt-monitor/releases/tag/v0.2.15-gpt-monitor-ui-v2)，包含 Linux amd64 和 arm64。只适用于正在运行的 **Sub2API 0.2.15**，安装时会短暂重建应用服务。
+
+**如果已安装 v1，请先按 [从 v1 升级](INSTALL.md#从-v1-升级) 回滚并备份旧目录和覆盖文件，然后执行下面的下载与安装。不要直接覆盖正在挂载运行的程序。**
 
 以下命令按原部署目录 `/opt/sub2api`、Compose 文件 `docker-compose.yml`、服务名 `sub2api` 编写：
 
 ```sh
-cd /opt/sub2api
-curl -fL --retry 3 -o sub2api-0.2.15-gpt-monitor-ui.tar.gz https://github.com/zhu961212/sub2api-gpt-monitor/releases/download/v0.2.15-gpt-monitor-ui/sub2api-0.2.15-gpt-monitor-ui.tar.gz
-printf '%s\n' '9eeac2185f7a2a08157c9e98760e503f8c37bf1f03547623e080c663327a6004  sub2api-0.2.15-gpt-monitor-ui.tar.gz' | sha256sum -c -
-tar -xzf sub2api-0.2.15-gpt-monitor-ui.tar.gz
-sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
+(
+  set -eu
+  cd /opt/sub2api
+  curl -fL --retry 3 -o sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz https://github.com/zhu961212/sub2api-gpt-monitor/releases/download/v0.2.15-gpt-monitor-ui-v2/sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz
+  printf '%s\n' '82ae15761aaf2f7b641e0e31869440cd181299cf1cfad13d41e3317ad120f1d5  sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz' | sha256sum -c -
+  tar -xzf sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz
+  sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
+)
 ```
 
 安装会短暂重建应用服务；保留现有镜像、数据库、Redis 和数据挂载。脚本自动检查版本、文件校验值和镜像架构。请保留解压后的 `gpt-monitor-patch` 目录，它是程序挂载来源。
 
 安装后强制刷新后台，进入 **GPT 账号巡检**，配置并启用，点击 **保存设置 → 立即巡检**。首次默认关闭，已有环境配置除外。
+
+每个待检测账号需要绑定可用代理。完整回答正常则开启调度，不正常则关闭；关闭后仍会复检，恢复正常则重新开启。网络、认证或代理错误保留原来的调度开关。
+
+可以执行下面命令确认安装，输出应包含 `ab80abc-gpt-monitor-ui-v2`：
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml exec -T sub2api /app/sub2api --version
+```
 
 若原部署使用多个 Compose 文件、自定义项目名或 `--env-file`，按照 [完整安装说明](INSTALL.md) 保留原有选项操作。
 
@@ -59,4 +72,6 @@ sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
 - Release 附有完整修改后源码 ZIP 与 SHA-256 文件。
 - 包含原项目 LICENSE，修改后的对应源码随安装包一同公开提供。
 
-已通过后台配置、动态启停、OAuth 筛选、代理隔离、完整 SSE、调度 CAS、Redis 协调、前端交互及构建测试；安装脚本通过 7 项模拟 Docker 测试。Linux 程序为交叉编译产物，未在用户实际服务器或真实 GPT 账号上执行验证。
+v2 将账号扫描改为每页 200 个的轻量查询，状态查询只加载展示字段；保存巡检结果不再触发调度缓存重建，调度开关与 outbox 通知在同一事务提交。同时复用回答匹配正则，减少流式响应处理的内存分配。
+
+已通过后端巡检回归测试、10 项前端测试和 9 项模拟 Docker 安装测试，源码补丁通过基线应用检查。Linux 程序为交叉编译产物，未在用户实际服务器或真实 GPT 账号上执行验证。具体范围见 [VALIDATION.txt](VALIDATION.txt)。
