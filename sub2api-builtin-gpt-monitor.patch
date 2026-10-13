@@ -235,28 +235,61 @@ index bdd47f4..37b54b5 100644
  	admin.NewScheduledTestHandler,
  	admin.NewChannelHandler,
 diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
-index 781928a..1ae3148 100644
+index 781928a..3e68cf5 100644
 --- a/backend/internal/repository/account_repo.go
 +++ b/backend/internal/repository/account_repo.go
-@@ -2689,6 +2689,73 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
+@@ -2689,6 +2689,99 @@ func (r *accountRepository) SetSchedulable(ctx context.Context, id int64, schedu
  	return nil
  }
  
 +// SetGPTMonitorSchedulableIfMatch changes only the scheduling switch while both
 +// the account and the proxy still match the snapshot that was actually probed.
-+// Administrator edits, expiry, or a changed proxy invalidate the result.
++// A changed identity, scheduling switch, or proxy endpoint invalidates the
++// result; normal token refreshes and usage observations do not.
 +func (r *accountRepository) SetGPTMonitorSchedulableIfMatch(ctx context.Context, snapshot *service.Account, schedulable bool) (bool, error) {
 +	now := time.Now()
 +	if snapshot == nil || snapshot.ID <= 0 || snapshot.Platform != service.PlatformOpenAI ||
-+		snapshot.Type != service.AccountTypeOAuth || snapshot.Status != service.StatusActive ||
++		snapshot.Type != service.AccountTypeOAuth || snapshot.Status != service.StatusActive || snapshot.IsOpenAIAgentIdentity() ||
 +		snapshot.ParentAccountID != nil || snapshot.ProxyID == nil || snapshot.Proxy == nil ||
 +		snapshot.Proxy.ID != *snapshot.ProxyID || snapshot.Proxy.Status != service.StatusActive ||
 +		snapshot.Proxy.IsExpired(now) || (snapshot.ExpiresAt != nil && !snapshot.ExpiresAt.After(now)) {
 +		return false, nil
 +	}
++	// Bind only stable account identity. Refreshing access/refresh/id tokens or
++	// their expiry while a request completes must not discard its answer.
++	identityKeys := []string{"chatgpt_account_id", "chatgpt_user_id", "auth_mode", "openai_auth_mode", "chatgpt_account_is_fedramp"}
++	identity := make(map[string]any, len(identityKeys))
++	for _, key := range identityKeys {
++		identity[key] = snapshot.Credentials[key]
++	}
++	identityJSON, err := json.Marshal(identity)
++	if err != nil {
++		return false, err
++	}
++	accountPredicates := []dbpredicate.Account{
++		dbaccount.IDEQ(snapshot.ID),
++		dbaccount.DeletedAtIsNil(),
++		dbaccount.PlatformEQ(service.PlatformOpenAI), dbaccount.TypeEQ(service.AccountTypeOAuth),
++		dbaccount.StatusEQ(service.StatusActive), dbaccount.ParentAccountIDIsNil(),
++		dbaccount.Or(dbaccount.ExpiresAtIsNil(), dbaccount.ExpiresAtGT(now)),
++		dbaccount.SchedulableEQ(snapshot.Schedulable), dbaccount.ProxyIDEQ(*snapshot.ProxyID),
++		func(s *entsql.Selector) {
++			s.Where(entsql.P(func(b *entsql.Builder) {
++				b.WriteString("jsonb_build_object(")
++				for i, key := range identityKeys {
++					if i > 0 {
++						b.WriteString(", ")
++					}
++					// Keys are the fixed identity allowlist above, never user input.
++					b.WriteString("'").WriteString(key).WriteString("', ").Ident(s.C(dbaccount.FieldCredentials)).WriteString(" -> '").WriteString(key).WriteString("'")
++				}
++				b.WriteString(") = ").Arg(string(identityJSON)).WriteString("::jsonb")
++			}))
++		},
++	}
 +	proxy := snapshot.Proxy
 +	proxyPredicates := []dbpredicate.Proxy{
-+		dbproxy.IDEQ(*snapshot.ProxyID), dbproxy.UpdatedAtEQ(proxy.UpdatedAt),
++		dbproxy.IDEQ(*snapshot.ProxyID),
 +		dbproxy.ProtocolEQ(proxy.Protocol), dbproxy.HostEQ(proxy.Host), dbproxy.PortEQ(proxy.Port),
 +		dbproxy.DeletedAtIsNil(), dbproxy.StatusEQ(service.StatusActive),
 +		dbproxy.Or(dbproxy.ExpiresAtIsNil(), dbproxy.ExpiresAtGT(now)),
@@ -282,15 +315,8 @@ index 781928a..1ae3148 100644
 +		defer func() { _ = tx.Rollback() }()
 +		client = tx.Client()
 +	}
-+	count, err := client.Account.Update().Where(
-+		dbaccount.IDEQ(snapshot.ID), dbaccount.UpdatedAtEQ(snapshot.UpdatedAt),
-+		dbaccount.DeletedAtIsNil(),
-+		dbaccount.PlatformEQ(service.PlatformOpenAI), dbaccount.TypeEQ(service.AccountTypeOAuth),
-+		dbaccount.StatusEQ(service.StatusActive), dbaccount.ParentAccountIDIsNil(),
-+		dbaccount.Or(dbaccount.ExpiresAtIsNil(), dbaccount.ExpiresAtGT(now)),
-+		dbaccount.SchedulableEQ(snapshot.Schedulable), dbaccount.ProxyIDEQ(*snapshot.ProxyID),
-+		dbaccount.HasProxyWith(proxyPredicates...),
-+	).SetSchedulable(schedulable).Save(ctx)
++	accountPredicates = append(accountPredicates, dbaccount.HasProxyWith(proxyPredicates...))
++	count, err := client.Account.Update().Where(accountPredicates...).SetSchedulable(schedulable).Save(ctx)
 +	if err != nil || count == 0 {
 +		return false, err
 +	}
@@ -312,6 +338,31 @@ index 781928a..1ae3148 100644
  func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
  	rows, err := r.sql.QueryContext(ctx, `
  		UPDATE accounts
+diff --git a/backend/internal/repository/http_upstream.go b/backend/internal/repository/http_upstream.go
+index ff19b03..6f7af1e 100644
+--- a/backend/internal/repository/http_upstream.go
++++ b/backend/internal/repository/http_upstream.go
+@@ -6,6 +6,7 @@ import (
+ 	"compress/flate"
+ 	"compress/gzip"
+ 	"context"
++	"crypto/sha256"
+ 	"crypto/tls"
+ 	"encoding/json"
+ 	"errors"
+@@ -1184,8 +1185,11 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
+ 	state := s.getOrCreateOpenAIHTTP2FallbackState(proxyKey)
+ 	activated, until := state.recordFailure(time.Now(), settings.fallbackErrorThreshold, settings.fallbackWindow, settings.fallbackTTL)
+ 	if activated {
++		// The cache key includes proxy credentials. Keep log correlation without
++		// disclosing the proxy URL, username, password or network address.
++		proxyDigest := sha256.Sum256([]byte(proxyKey))
+ 		slog.Warn("openai_http2_proxy_fallback_activated",
+-			"proxy", proxyKey,
++			"proxy_hash", fmt.Sprintf("%x", proxyDigest[:12]),
+ 			"fallback_until", until.Format(time.RFC3339))
+ 	}
+ }
 diff --git a/backend/internal/repository/wire.go b/backend/internal/repository/wire.go
 index ba13b0f..138dbe2 100644
 --- a/backend/internal/repository/wire.go
@@ -352,7 +403,7 @@ index 315fc20..511aa43 100644
  	plugins := admin.Group("/plugins")
  	{
 diff --git a/backend/internal/service/openai_oauth_service.go b/backend/internal/service/openai_oauth_service.go
-index 5eef594..b3eebc0 100644
+index 5eef594..a9dd294 100644
 --- a/backend/internal/service/openai_oauth_service.go
 +++ b/backend/internal/service/openai_oauth_service.go
 @@ -345,7 +345,18 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
@@ -367,7 +418,7 @@ index 5eef594..b3eebc0 100644
 +			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_UNAVAILABLE", "monitor account proxy is unavailable")
 +		}
 +		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-+		if err != nil || validateGPTMonitorProxy(proxy) != nil || proxy.ID != pinned.ID || proxy.URL() != pinned.URL || !proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
++		if err != nil || validateGPTMonitorProxy(proxy) != nil || proxy.ID != pinned.ID || proxy.URL() != pinned.URL {
 +			return nil, infraerrors.New(http.StatusPreconditionFailed, "GPT_MONITOR_PROXY_CHANGED", "monitor account proxy changed or is unavailable")
 +		}
 +		proxyURL = pinned.URL
@@ -1445,16 +1496,17 @@ index 0000000..7915820
 +}
 diff --git a/backend/internal/repository/account_repo_gpt_monitor_test.go b/backend/internal/repository/account_repo_gpt_monitor_test.go
 new file mode 100644
-index 0000000..e7e14f7
+index 0000000..6475e12
 --- /dev/null
 +++ b/backend/internal/repository/account_repo_gpt_monitor_test.go
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,394 @@
 +package repository
 +
 +import (
 +	"context"
 +	"errors"
 +	"regexp"
++	"strconv"
 +	"strings"
 +	"testing"
 +	"time"
@@ -1473,6 +1525,12 @@ index 0000000..e7e14f7
 +	return &service.Account{
 +		ID: 17, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 +		Status: service.StatusActive, UpdatedAt: time.Now(), Schedulable: true, ProxyID: &proxyID,
++		Credentials: map[string]any{
++			"access_token": "monitor-test-access", "refresh_token": "monitor-test-refresh",
++			"auth_mode": "oauth", "chatgpt_account_id": "monitor-test-account", "chatgpt_user_id": "monitor-test-user",
++			"chatgpt_account_is_fedramp": true, "user_agent": "monitor-test-agent",
++			"header_override_enabled": true, "header_overrides": map[string]any{"x-test": "original"},
++		},
 +		Proxy: &service.Proxy{ID: proxyID, Status: service.StatusActive, UpdatedAt: time.Now(), Protocol: "http", Host: "proxy", Port: 3128, Username: "user", Password: "pass"},
 +	}
 +}
@@ -1543,7 +1601,7 @@ index 0000000..e7e14f7
 +			}
 +			_, where, ok := strings.Cut(mutationSQL, " WHERE ")
 +			require.True(t, ok)
-+			for _, guard := range []string{"updated_at", "platform", "type", "status", "deleted_at", "parent_account_id", "schedulable", "proxy_id", "proxies", "protocol", "host", "port", "username", "password"} {
++			for _, guard := range []string{"credentials", "platform", "type", "status", "deleted_at", "parent_account_id", "schedulable", "proxy_id", "proxies", "protocol", "host", "port", "username", "password"} {
 +				require.Contains(t, where, guard, "scheduling must compare account and proxy identity")
 +			}
 +			require.GreaterOrEqual(t, strings.Count(where, "expires_at"), 4, "account and proxy expiry are checked at mutation time")
@@ -1559,6 +1617,185 @@ index 0000000..e7e14f7
 +	}
 +}
 +
++// Capture at the driver boundary so tests verify the values actually bound to
++// the atomic mutation, including the stable account identity tuple.
++type gptMonitorMutationCapture struct {
++	query string
++	args  []any
++}
++
++type gptMonitorCaptureDriver struct {
++	dialect.Driver
++	capture *gptMonitorMutationCapture
++}
++
++func (d *gptMonitorCaptureDriver) Tx(ctx context.Context) (dialect.Tx, error) {
++	tx, err := d.Driver.Tx(ctx)
++	if err != nil {
++		return nil, err
++	}
++	return &gptMonitorCaptureTx{Tx: tx.(*entsql.Tx), capture: d.capture}, nil
++}
++
++type gptMonitorCaptureTx struct {
++	*entsql.Tx
++	capture *gptMonitorMutationCapture
++}
++
++func (tx *gptMonitorCaptureTx) Exec(ctx context.Context, query string, args, result any) error {
++	if strings.HasPrefix(query, `UPDATE "accounts"`) {
++		tx.capture.query = query
++		tx.capture.args = append([]any(nil), args.([]any)...)
++	}
++	return tx.Tx.Exec(ctx, query, args, result)
++}
++
++func captureGPTMonitorSchedulingMutation(t *testing.T, snapshot *service.Account) gptMonitorMutationCapture {
++	t.Helper()
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	capture := gptMonitorMutationCapture{}
++	driver := &gptMonitorCaptureDriver{Driver: entsql.OpenDB(dialect.Postgres, db), capture: &capture}
++	client := dbent.NewClient(dbent.Driver(driver))
++	t.Cleanup(func() { _ = client.Close() })
++	repo := newAccountRepositoryWithSQL(client, db, nil)
++	mock.ExpectBegin()
++	mock.ExpectExec(`UPDATE "accounts"`).WillReturnResult(sqlmock.NewResult(0, 1))
++	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox")).WillReturnResult(sqlmock.NewResult(1, 1))
++	mock.ExpectCommit()
++	changed, err := repo.SetGPTMonitorSchedulableIfMatch(context.Background(), snapshot, !snapshot.Schedulable)
++	require.NoError(t, err)
++	require.True(t, changed)
++	require.NoError(t, mock.ExpectationsWereMet())
++	require.NotEmpty(t, capture.query)
++	return capture
++}
++
++func gptMonitorBoundPredicateValue(t *testing.T, capture gptMonitorMutationCapture, pattern string) any {
++	t.Helper()
++	_, where, ok := strings.Cut(capture.query, " WHERE ")
++	require.True(t, ok)
++	match := regexp.MustCompile(pattern).FindStringSubmatch(where)
++	require.Len(t, match, 2, "mutation must atomically guard this snapshot field: %s", where)
++	index, err := strconv.Atoi(match[1])
++	require.NoError(t, err)
++	require.Positive(t, index)
++	require.LessOrEqual(t, index, len(capture.args))
++	return capture.args[index-1]
++}
++
++func TestGPTMonitorSchedulingAllowsTokenRotationAndTelemetry(t *testing.T) {
++	const expectedIdentity = `{"auth_mode":"oauth","openai_auth_mode":null,"chatgpt_account_id":"monitor-test-account","chatgpt_user_id":"monitor-test-user","chatgpt_account_is_fedramp":true}`
++	for _, tc := range []struct {
++		name string
++		edit func(*service.Account)
++	}{
++		{"original snapshot", func(*service.Account) {}},
++		{"normal token rotation", func(a *service.Account) {
++			a.Credentials["access_token"] = "rotated-access"
++			a.Credentials["refresh_token"] = "rotated-refresh"
++			a.Credentials["id_token"] = "rotated-id-token"
++			a.Credentials["expires_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
++			a.Credentials["plan_type"] = "team"
++			a.Credentials["user_agent"] = "updated-client"
++			a.Credentials["header_overrides"] = map[string]any{"x-test": "updated"}
++		}},
++		{"concurrent usage observation", func(a *service.Account) {
++			used := a.UpdatedAt.Add(time.Minute)
++			a.UpdatedAt, a.LastUsedAt = used, &used
++			a.Extra = map[string]any{
++				"codex_primary_used_percent": 41, "codex_usage_updated_at": used.Format(time.RFC3339),
++				"gpt_account_monitor": map[string]any{"verdict": "normal"},
++			}
++		}},
++		{"proxy rename or observation", func(a *service.Account) {
++			a.Proxy.Name = "renamed proxy"
++			a.Proxy.UpdatedAt = a.Proxy.UpdatedAt.Add(time.Minute)
++		}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			snapshot := gptMonitorAccountSnapshot()
++			tc.edit(snapshot)
++			capture := captureGPTMonitorSchedulingMutation(t, snapshot)
++			bound := gptMonitorBoundPredicateValue(t, capture, `jsonb_build_object\([^)]*\) = \$(\d+)::jsonb`)
++			require.JSONEq(t, expectedIdentity, bound.(string), "token rotation must preserve the exact same stable identity guard")
++			_, where, _ := strings.Cut(capture.query, " WHERE ")
++			accountWhere, _, ok := strings.Cut(where, "SELECT")
++			require.True(t, ok, "the proxy identity must still be checked in the same SQL statement")
++			require.NotContains(t, where, "updated_at", "account and proxy observations must not invalidate a completed answer")
++			require.NotContains(t, accountWhere, `"extra"`, "usage observations do not change the probe request")
++			require.NotContains(t, accountWhere, "last_used_at")
++			for _, secret := range []string{"monitor-test-access", "monitor-test-refresh", "monitor-test-account", "rotated-access", "rotated-refresh"} {
++				require.NotContains(t, capture.query, secret, "credentials must remain bound values, never SQL text")
++			}
++			for _, rotating := range []string{"access_token", "refresh_token", "id_token", "user_agent", "header_overrides", "plan_type"} {
++				require.NotContains(t, where, "'"+rotating+"'", "normal token refresh and client metadata changes must not block scheduling")
++				require.NotContains(t, bound.(string), rotating)
++			}
++		})
++	}
++}
++
++func TestGPTMonitorSchedulingGuardsChangedStableIdentity(t *testing.T) {
++	for _, key := range []string{"chatgpt_account_id", "chatgpt_user_id", "auth_mode", "openai_auth_mode", "chatgpt_account_is_fedramp"} {
++		t.Run(key, func(t *testing.T) {
++			snapshot := gptMonitorAccountSnapshot()
++			original := captureGPTMonitorSchedulingMutation(t, snapshot)
++			before := gptMonitorBoundPredicateValue(t, original, `jsonb_build_object\([^)]*\) = \$(\d+)::jsonb`)
++			if key == "chatgpt_account_is_fedramp" {
++				snapshot.Credentials[key] = false
++			} else {
++				snapshot.Credentials[key] = "another-identity"
++			}
++			changed := captureGPTMonitorSchedulingMutation(t, snapshot)
++			after := gptMonitorBoundPredicateValue(t, changed, `jsonb_build_object\([^)]*\) = \$(\d+)::jsonb`)
++			require.NotEqual(t, before, after, "the SQL equality must prevent an answer applying to a different account identity")
++			require.Contains(t, changed.query, `"credentials" -> '`+key+`'`)
++		})
++	}
++}
++
++func TestGPTMonitorSchedulingGuardsEligibilitySchedulingAndProxyEndpoint(t *testing.T) {
++	for _, expires := range []*time.Time{nil, ptrTime(time.Now().Add(time.Hour))} {
++		for _, schedulable := range []bool{false, true} {
++			snapshot := gptMonitorAccountSnapshot()
++			snapshot.ExpiresAt = expires
++			snapshot.Schedulable = schedulable
++			snapshot.AutoPauseOnExpired = schedulable
++			capture := captureGPTMonitorSchedulingMutation(t, snapshot)
++			_, where, _ := strings.Cut(capture.query, " WHERE ")
++			accountWhere, _, _ := strings.Cut(where, "SELECT")
++			// Ent emits boolean equality as the column or NOT column.
++			guard := `AND "accounts"."schedulable"`
++			if !schedulable {
++				guard = `AND NOT "accounts"."schedulable"`
++			}
++			require.Contains(t, accountWhere, guard)
++			require.Equal(t, *snapshot.ProxyID, gptMonitorBoundPredicateValue(t, capture, `"proxy_id" = \$(\d+)`))
++			require.Equal(t, service.StatusActive, gptMonitorBoundPredicateValue(t, capture, `"accounts"\."status" = \$(\d+)`))
++			require.Equal(t, service.StatusActive, gptMonitorBoundPredicateValue(t, capture, `"proxies"\."status" = \$(\d+)`))
++			require.Equal(t, snapshot.Proxy.Protocol, gptMonitorBoundPredicateValue(t, capture, `"protocol" = \$(\d+)`))
++			require.Equal(t, snapshot.Proxy.Host, gptMonitorBoundPredicateValue(t, capture, `"host" = \$(\d+)`))
++			require.Equal(t, snapshot.Proxy.Port, gptMonitorBoundPredicateValue(t, capture, `"port" = \$(\d+)`))
++			require.Equal(t, snapshot.Proxy.Username, gptMonitorBoundPredicateValue(t, capture, `"username" = \$(\d+)`))
++			require.Equal(t, snapshot.Proxy.Password, gptMonitorBoundPredicateValue(t, capture, `"password" = \$(\d+)`))
++			require.Contains(t, where, `"accounts"."expires_at" IS NULL OR "accounts"."expires_at" >`)
++			require.Contains(t, where, `"proxies"."expires_at" IS NULL OR "proxies"."expires_at" >`)
++			require.NotContains(t, accountWhere, `"expires_at" =`, "renewal does not invalidate a still-eligible account")
++			require.NotContains(t, accountWhere, "auto_pause_on_expired")
++		}
++	}
++}
++
++func TestGPTMonitorSchedulingRejectsUnserializableIdentityWithoutSQL(t *testing.T) {
++	snapshot := gptMonitorAccountSnapshot()
++	snapshot.Credentials["chatgpt_account_id"] = make(chan struct{})
++	changed, err := (&accountRepository{}).SetGPTMonitorSchedulableIfMatch(context.Background(), snapshot, false)
++	require.Error(t, err)
++	require.False(t, changed)
++}
++
 +func TestGPTMonitorSchedulingRejectsIneligibleSnapshotWithoutSQL(t *testing.T) {
 +	for _, tc := range []struct {
 +		name string
@@ -1568,6 +1805,10 @@ index 0000000..e7e14f7
 +		{"API Key account", func(a *service.Account) *service.Account { a.Type = service.AccountTypeAPIKey; return a }},
 +		{"other platform", func(a *service.Account) *service.Account { a.Platform = service.PlatformAnthropic; return a }},
 +		{"inactive", func(a *service.Account) *service.Account { a.Status = "disabled"; return a }},
++		{"agent identity", func(a *service.Account) *service.Account {
++			a.Credentials["auth_mode"] = service.OpenAIAuthModeAgentIdentity
++			return a
++		}},
 +		{"shadow", func(a *service.Account) *service.Account { id := int64(1); a.ParentAccountID = &id; return a }},
 +		{"missing proxy ID", func(a *service.Account) *service.Account { a.ProxyID = nil; return a }},
 +		{"missing proxy", func(a *service.Account) *service.Account { a.Proxy = nil; return a }},
@@ -1948,6 +2189,591 @@ index 0000000..c4fe9bb
 +	require.False(t, ok)
 +	_, err = s.NextRun(ctx, "config")
 +	require.Error(t, err)
++}
+diff --git a/backend/internal/repository/gpt_monitor_upstream_privacy_test.go b/backend/internal/repository/gpt_monitor_upstream_privacy_test.go
+new file mode 100644
+index 0000000..bd0334a
+--- /dev/null
++++ b/backend/internal/repository/gpt_monitor_upstream_privacy_test.go
+@@ -0,0 +1,37 @@
++package repository
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"log/slog"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestGPTMonitorUpstreamHTTP2FallbackLogsNoProxySecrets(t *testing.T) {
++	var output bytes.Buffer
++	previous := slog.Default()
++	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
++	t.Cleanup(func() { slog.SetDefault(previous) })
++	cfg := &config.Config{Gateway: config.GatewayConfig{OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
++		Enabled: true, AllowProxyFallbackToHTTP1: true, FallbackErrorThreshold: 1,
++	}}}
++	upstream := &httpUpstreamService{cfg: cfg}
++	proxyKey, _, err := normalizeProxyURL("http://private-monitor-user:private-monitor-password@private-monitor-host.invalid:3210")
++	require.NoError(t, err)
++	upstream.recordOpenAIHTTP2Failure(service.HTTPUpstreamProfileOpenAI, upstreamProtocolModeOpenAIH2, proxyKey, errors.New("http2: protocol error private-upstream-detail"))
++	require.True(t, upstream.isOpenAIHTTP2FallbackActive(proxyKey), "redacting logs must preserve proxy fallback behavior")
++	var record map[string]any
++	require.NoError(t, json.Unmarshal(output.Bytes(), &record))
++	require.Equal(t, "openai_http2_proxy_fallback_activated", record["msg"])
++	require.Regexp(t, `^[0-9a-f]{24}$`, record["proxy_hash"])
++	require.NotEmpty(t, record["fallback_until"])
++	require.NotContains(t, record, "proxy")
++	for _, secret := range []string{proxyKey, "private-monitor-user", "private-monitor-password", "private-monitor-host.invalid", ":3210", "private-upstream-detail"} {
++		require.NotContains(t, output.String(), secret)
++	}
++}
+diff --git a/backend/internal/service/gpt_account_monitor_diagnostics_test.go b/backend/internal/service/gpt_account_monitor_diagnostics_test.go
+new file mode 100644
+index 0000000..6d19a64
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_diagnostics_test.go
+@@ -0,0 +1,161 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestGPTMonitorPersistsDistinctSafeFailures(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		err     error
++		code    string
++		status  int
++		message string
++	}{
++		{"missing proxy", gptMonitorError("proxy_missing", "账号未绑定有效代理，请先绑定代理"), "proxy_missing", 0, "绑定代理"},
++		{"authentication", gptMonitorHTTPError(401, strings.NewReader(`{"error":{"message":"SECRET-token"}}`)), "unauthorized", 401, "HTTP 401"},
++		{"rate limit", gptMonitorHTTPError(429, strings.NewReader(`{"error":{"code":"rate_limit_exceeded","message":"SECRET-proxy"}}`)), "rate_limited", 429, "HTTP 429"},
++		{"model unavailable", gptMonitorHTTPError(400, strings.NewReader(`{"error":{"code":"model_not_found","message":"SECRET"}}`)), "model_unavailable", 400, "模型"},
++		{"timeout", gptMonitorTransportError(context.DeadlineExceeded), "timeout", 0, "10 秒"},
++		{"stream incomplete", gptMonitorError("incomplete_response", "上游响应中断，未收到完整回答"), "incomplete_response", 0, "未收到完整回答"},
++		{"unknown", errors.New("SECRET proxy password"), "unknown_error", 0, "原因未知"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			for _, enabled := range []bool{false, true} {
++				s, repo, _ := gptMonitorFixture()
++				s.cfg.AccountIDs = []int64{1}
++				repo.accounts[0].Schedulable = enabled
++				s.probe = func(context.Context, int64, string, string) (*Account, string, error) { return nil, "", tc.err }
++				s.runCycle(context.Background())
++				result := repo.results[1]
++				require.Equal(t, "error", result.Verdict)
++				require.Equal(t, tc.code, result.ErrorCode)
++				require.Equal(t, tc.status, result.HTTPStatus)
++				require.Contains(t, result.Message, tc.message)
++				require.NotContains(t, result.Message, "SECRET")
++				require.Contains(t, result.Message, "调度未改变")
++				require.Equal(t, enabled, result.Schedulable)
++				require.False(t, result.Changed)
++				require.Empty(t, repo.writes)
++			}
++		})
++	}
++}
++
++func TestGPTMonitorStreamErrorDetailsSurviveProbe(t *testing.T) {
++	for _, event := range []string{
++		`{"type":"response.failed","response":{"error":{"code":"model_not_found","message":"SECRET"}}}`,
++		`{"type":"error","error":{"code":"model_not_found","message":"SECRET"}}`,
++		`{"type":"error","code":"model_not_found","message":"SECRET"}`,
++	} {
++		client := &http.Client{Transport: gptMonitorTestRoundTripper(func(*http.Request) (*http.Response, error) {
++			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("data: " + event + "\n\n"))}, nil
++		})}
++		answer, err := gptMonitorProbeWithClient(context.Background(), client, gptMonitorTestAccount(), "test-token", "ignored", "question")
++		require.Error(t, err)
++		require.Empty(t, answer)
++		code, message, status := gptMonitorErrorDetails(err)
++		require.Equal(t, "model_unavailable", code)
++		require.Zero(t, status)
++		require.NotContains(t, message, "SECRET")
++	}
++}
++
++func TestGPTMonitorDatabaseFailureIsNotSnapshotConflict(t *testing.T) {
++	for _, failed := range []bool{false, true} {
++		s, repo, _ := gptMonitorFixture()
++		s.cfg.AccountIDs = []int64{2}
++		repo.casFail = true
++		if failed {
++			repo.casErr = errors.New("SECRET database connection")
++		}
++		s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++			return &repo.accounts[1], "iPhone 17", nil
++		}
++		s.runCycle(context.Background())
++		result := repo.results[2]
++		if failed {
++			require.Equal(t, "scheduling_write_failed", result.ErrorCode)
++			require.Contains(t, result.Message, "数据库")
++			require.NotContains(t, result.Message, "账号或代理")
++		} else {
++			require.Equal(t, "snapshot_changed", result.ErrorCode)
++			require.Contains(t, result.Message, "账号或代理")
++		}
++		require.NotContains(t, result.Message, "SECRET")
++		require.False(t, result.Changed)
++		require.Empty(t, repo.writes)
++	}
++}
++
++func TestGPTMonitorKeepsReceivedHTTPStatusWhenErrorBodyTimesOut(t *testing.T) {
++	s, repo, _ := gptMonitorFixture()
++	cfg := s.cfg
++	cfg.TimeoutSeconds = 0 // Expire the probe context before returning received headers.
++	s.probe = func(ctx context.Context, _ int64, _, _ string) (*Account, string, error) {
++		require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
++		return nil, "", gptMonitorHTTPError(401, nil)
++	}
++	s.checkOne(context.Background(), "owner", &repo.accounts[0], cfg)
++	require.Equal(t, 401, repo.results[1].HTTPStatus)
++	require.Equal(t, "unauthorized", repo.results[1].ErrorCode)
++	require.Empty(t, repo.writes)
++}
++
++func TestGPTMonitorStaleCachedTokenUsesCurrentUnexpiredToken(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		token   string
++		expired bool
++		wantErr bool
++	}{
++		{"refreshed", "refreshed-token", false, false},
++		{"removed", "", false, true},
++		{"expired", "expired-token", true, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			initial, latest := gptMonitorTestAccount(), gptMonitorTestAccount()
++			latest.Credentials["access_token"] = tc.token
++			if tc.expired {
++				latest.Credentials["expires_at"] = "2000-01-01T00:00:00Z"
++				latest.Credentials["refresh_token"] = "refresh"
++			}
++			calls := 0
++			repo := &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) {
++				calls++
++				if calls == 1 {
++					return initial, nil
++				}
++				return latest, nil
++			}}
++			cache := &gptMonitorProbeCache{token: "test-token"}
++			s := &OpenAIGatewayService{accountRepo: repo, openAITokenProvider: &OpenAITokenProvider{tokenCache: cache}}
++			snapshot, token, err := s.resolveGPTMonitorIdentity(context.Background(), initial.ID)
++			if tc.wantErr {
++				require.Error(t, err)
++				require.Empty(t, token)
++			} else {
++				require.NoError(t, err)
++				require.Same(t, latest, snapshot)
++				require.Equal(t, tc.token, token)
++			}
++			require.True(t, latest.Schedulable)
++		})
++	}
++}
++
++func TestGPTMonitorConfiguredDeadlineHasNoNinetySecondHeaderCap(t *testing.T) {
++	client, transport, err := newGPTMonitorClient("http://127.0.0.1:3128")
++	require.NoError(t, err)
++	defer transport.CloseIdleConnections()
++	require.Zero(t, transport.ResponseHeaderTimeout, "request context owns the configured timeout")
++	require.Equal(t, 5*time.Minute, client.Timeout, "safety ceiling must allow the full 300-second configuration")
++}
+diff --git a/backend/internal/service/gpt_account_monitor_errors.go b/backend/internal/service/gpt_account_monitor_errors.go
+new file mode 100644
+index 0000000..dc3e1cb
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_errors.go
+@@ -0,0 +1,201 @@
++package service
++
++import (
++	"context"
++	"crypto/tls"
++	"crypto/x509"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"strings"
++)
++
++// All fields are safe to persist and display. Never put upstream messages,
++// transport error strings, URLs or credentials into this error.
++type gptMonitorProbeError struct {
++	Code       string
++	Message    string
++	HTTPStatus int
++}
++
++func (e *gptMonitorProbeError) Error() string {
++	if e == nil {
++		return "检测失败，原因未知"
++	}
++	return e.Message
++}
++
++// Callers must use a stable code and a trusted, static message. Untrusted errors
++// must go through the transport, HTTP or upstream classifiers below.
++func gptMonitorError(code, message string) error {
++	return &gptMonitorProbeError{Code: code, Message: message}
++}
++
++func gptMonitorErrorDetails(err error) (code, message string, httpStatus int) {
++	if err == nil {
++		return "", "", 0
++	}
++	var probeErr *gptMonitorProbeError
++	if errors.As(err, &probeErr) && probeErr != nil {
++		return probeErr.Code, probeErr.Message, probeErr.HTTPStatus
++	}
++	return "unknown_error", "检测失败，原因未知", 0
++}
++
++func gptMonitorTransportError(err error) error {
++	var probeErr *gptMonitorProbeError
++	if errors.As(err, &probeErr) && probeErr != nil {
++		return probeErr
++	}
++	if errors.Is(err, context.Canceled) {
++		return gptMonitorError("canceled", "检测已取消")
++	}
++	if errors.Is(err, context.DeadlineExceeded) {
++		return gptMonitorError("timeout", "连接或读取上游超时，请检查账号代理")
++	}
++	var networkErr net.Error
++	if errors.As(err, &networkErr) && networkErr.Timeout() {
++		return gptMonitorError("timeout", "连接或读取上游超时，请检查账号代理")
++	}
++	var dnsErr *net.DNSError
++	if errors.As(err, &dnsErr) {
++		return gptMonitorError("dns_error", "域名解析失败，请检查账号代理及 DNS")
++	}
++	var certificateErr *tls.CertificateVerificationError
++	var unknownAuthorityErr x509.UnknownAuthorityError
++	var hostnameErr x509.HostnameError
++	var invalidCertificateErr x509.CertificateInvalidError
++	var recordErr tls.RecordHeaderError
++	if errors.As(err, &certificateErr) || errors.As(err, &unknownAuthorityErr) ||
++		errors.As(err, &hostnameErr) || errors.As(err, &invalidCertificateErr) || errors.As(err, &recordErr) {
++		return gptMonitorError("tls_error", "TLS 握手或证书验证失败，请检查账号代理")
++	}
++	// Some standard-library CONNECT and TLS failures do not expose a typed
++	// error. Recognize their fixed phrases, but never return the original text.
++	var detail string
++	if err != nil {
++		detail = strings.ToLower(err.Error())
++	}
++	if strings.Contains(detail, "proxy authentication required") ||
++		strings.Contains(detail, "socks authentication failed") ||
++		strings.Contains(detail, "no acceptable authentication methods") ||
++		strings.Contains(detail, "username/password authentication failed") {
++		return gptMonitorError("proxy_auth_required", "代理认证失败，请检查代理用户名和密码")
++	}
++	if strings.Contains(detail, "tls:") || strings.Contains(detail, "tls handshake") ||
++		strings.Contains(detail, "x509:") || strings.Contains(detail, "http response to https client") {
++		return gptMonitorError("tls_error", "TLS 握手或证书验证失败，请检查账号代理")
++	}
++	var operationErr *net.OpError
++	if errors.As(err, &operationErr) && (strings.Contains(operationErr.Op, "proxyconnect") || strings.Contains(operationErr.Op, "socks connect")) {
++		return gptMonitorError("proxy_connection_failed", "代理连接或隧道建立失败，请检查账号代理")
++	}
++	if strings.Contains(detail, "proxyconnect") || strings.Contains(detail, "socks connect") {
++		return gptMonitorError("proxy_connection_failed", "代理连接或隧道建立失败，请检查账号代理")
++	}
++	return gptMonitorError("network_error", "上游网络连接失败，请检查账号代理")
++}
++
++const gptMonitorHTTPErrorBodyLimit = 64 * 1024
++
++func gptMonitorHTTPError(status int, body io.Reader) error {
++	var code, errorType, message string
++	if body != nil {
++		// Error pages can be arbitrarily large or contain credentials. Read only
++		// enough to classify a small JSON error; never preserve the raw body.
++		raw, err := io.ReadAll(io.LimitReader(body, gptMonitorHTTPErrorBodyLimit))
++		if err == nil {
++			var envelope struct {
++				Code    string          `json:"code"`
++				Type    string          `json:"type"`
++				Message string          `json:"message"`
++				Error   json.RawMessage `json:"error"`
++			}
++			if json.Unmarshal(raw, &envelope) == nil {
++				code, errorType, message = envelope.Code, envelope.Type, envelope.Message
++				var nested struct {
++					Code    string `json:"code"`
++					Type    string `json:"type"`
++					Message string `json:"message"`
++				}
++				if json.Unmarshal(envelope.Error, &nested) == nil {
++					code, errorType, message = nested.Code, nested.Type, nested.Message
++				} else {
++					var errorMessage string
++					if json.Unmarshal(envelope.Error, &errorMessage) == nil {
++						message = errorMessage
++					}
++				}
++			}
++		}
++	}
++	classified, known := classifyGPTMonitorUpstreamError(code, errorType, message)
++	// HTTP authentication, permission and server failures are authoritative;
++	// do not let a conflicting error body disguise the failure category.
++	switch {
++	case status == http.StatusProxyAuthRequired:
++		classified = &gptMonitorProbeError{Code: "proxy_auth_required", Message: "代理认证失败，请检查代理用户名和密码"}
++	case status == http.StatusUnauthorized:
++		classified = &gptMonitorProbeError{Code: "unauthorized", Message: "账号认证失败，访问令牌无效或已过期"}
++	case status == http.StatusForbidden:
++		classified = &gptMonitorProbeError{Code: "forbidden", Message: "上游拒绝访问，请检查账号权限或代理出口"}
++	case status == http.StatusTooManyRequests:
++		if !known || classified.Code != "quota_exceeded" {
++			classified = &gptMonitorProbeError{Code: "rate_limited", Message: "上游请求频率受限，请稍后重试"}
++		}
++	case status >= 500 && status <= 599:
++		classified = &gptMonitorProbeError{Code: "upstream_error", Message: "上游服务暂时异常，请稍后重试"}
++	case !known:
++		classified = &gptMonitorProbeError{Code: "http_error", Message: fmt.Sprintf("上游返回 HTTP %d，检测失败", status)}
++	}
++	classified.HTTPStatus = status
++	return classified
++}
++
++func gptMonitorUpstreamError(code, errorType, message string) error {
++	if classified, known := classifyGPTMonitorUpstreamError(code, errorType, message); known {
++		return classified
++	}
++	return gptMonitorError("upstream_error", "上游响应失败，未完成检测")
++}
++
++func classifyGPTMonitorUpstreamError(code, errorType, message string) (*gptMonitorProbeError, bool) {
++	for _, value := range []string{strings.ToLower(strings.TrimSpace(code)), strings.ToLower(strings.TrimSpace(errorType))} {
++		switch value {
++		case "model_not_found", "model_not_available", "model_not_supported", "unsupported_model", "invalid_model", "unknown_model", "model_access_denied":
++			return &gptMonitorProbeError{Code: "model_unavailable", Message: "当前账号无法使用指定检测模型，请检查模型权限"}, true
++		case "unsupported_reasoning", "unsupported_reasoning_effort", "reasoning_effort_not_supported", "invalid_reasoning_effort":
++			return &gptMonitorProbeError{Code: "reasoning_unsupported", Message: "指定检测模型不支持当前推理强度"}, true
++		case "invalid_api_key", "invalid_token", "token_expired", "authentication_error", "unauthorized":
++			return &gptMonitorProbeError{Code: "unauthorized", Message: "账号认证失败，访问令牌无效或已过期"}, true
++		case "permission_error", "permission_denied", "forbidden", "account_deactivated", "account_suspended":
++			return &gptMonitorProbeError{Code: "forbidden", Message: "上游拒绝访问，请检查账号权限或代理出口"}, true
++		case "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached", "usage_limit_reached", "credits_exhausted":
++			return &gptMonitorProbeError{Code: "quota_exceeded", Message: "账号可用额度不足或使用额度已耗尽"}, true
++		case "rate_limit_exceeded", "rate_limit_error", "too_many_requests":
++			return &gptMonitorProbeError{Code: "rate_limited", Message: "上游请求频率受限，请稍后重试"}, true
++		case "server_error", "internal_error", "internal_server_error", "overloaded_error":
++			return &gptMonitorProbeError{Code: "upstream_error", Message: "上游服务暂时异常，请稍后重试"}, true
++		}
++	}
++	// The model and reasoning APIs sometimes use only invalid_request_error or
++	// unsupported_value. Inspect narrowly recognized phrases, never echo them.
++	detail := strings.ToLower(message)
++	unsupported := false
++	for _, phrase := range []string{"not supported", "does not support", "unsupported", "not available", "unavailable", "not found", "does not exist", "do not have access", "don't have access"} {
++		if strings.Contains(detail, phrase) {
++			unsupported = true
++			break
++		}
++	}
++	if unsupported && (strings.Contains(detail, "reasoning") || strings.Contains(detail, "effort") || strings.Contains(detail, "xhigh")) {
++		return &gptMonitorProbeError{Code: "reasoning_unsupported", Message: "指定检测模型不支持当前推理强度"}, true
++	}
++	if (unsupported && strings.Contains(detail, "model")) || strings.Contains(detail, "unknown model") {
++		return &gptMonitorProbeError{Code: "model_unavailable", Message: "当前账号无法使用指定检测模型，请检查模型权限"}, true
++	}
++	return nil, false
++}
+diff --git a/backend/internal/service/gpt_account_monitor_errors_test.go b/backend/internal/service/gpt_account_monitor_errors_test.go
+new file mode 100644
+index 0000000..96b5c61
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_errors_test.go
+@@ -0,0 +1,162 @@
++package service
++
++import (
++	"context"
++	"crypto/tls"
++	"crypto/x509"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/url"
++	"strings"
++	"testing"
++)
++
++const gptMonitorErrorTestSecret = "secret-token-password-private-host"
++
++func assertGPTMonitorSafeError(t *testing.T, err error, expectedCode string, expectedStatus int) {
++	t.Helper()
++	if err == nil {
++		t.Fatal("expected a classified error")
++	}
++	code, message, status := gptMonitorErrorDetails(err)
++	if code != expectedCode || status != expectedStatus || message == "" {
++		t.Fatalf("unexpected error details: code=%q message=%q status=%d", code, message, status)
++	}
++	if strings.Contains(err.Error(), gptMonitorErrorTestSecret) || strings.Contains(message, gptMonitorErrorTestSecret) || strings.Contains(code, gptMonitorErrorTestSecret) {
++		t.Fatal("untrusted upstream or transport details leaked")
++	}
++}
++
++func TestGPTMonitorTransportErrorClassification(t *testing.T) {
++	wrap := func(err error) error {
++		return &url.Error{Op: "Post", URL: "https://user:" + gptMonitorErrorTestSecret + "@private.example/", Err: err}
++	}
++	for _, test := range []struct {
++		name string
++		err  error
++		code string
++	}{
++		{"canceled", wrap(context.Canceled), "canceled"},
++		{"deadline", wrap(context.DeadlineExceeded), "timeout"},
++		{"dns_timeout", wrap(&net.DNSError{Name: gptMonitorErrorTestSecret, IsTimeout: true}), "timeout"},
++		{"dns", wrap(&net.DNSError{Name: gptMonitorErrorTestSecret, Err: "no such host"}), "dns_error"},
++		{"certificate", wrap(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), "tls_error"},
++		{"unknown_authority", wrap(x509.UnknownAuthorityError{}), "tls_error"},
++		{"tls_handshake", wrap(errors.New("remote error: tls: handshake failure " + gptMonitorErrorTestSecret)), "tls_error"},
++		{"connect", wrap(&net.OpError{Op: "proxyconnect", Net: "tcp", Err: errors.New(gptMonitorErrorTestSecret)}), "proxy_connection_failed"},
++		{"socks", wrap(errors.New("socks connect tcp: " + gptMonitorErrorTestSecret)), "proxy_connection_failed"},
++		{"proxy_auth", wrap(errors.New("Proxy Authentication Required " + gptMonitorErrorTestSecret)), "proxy_auth_required"},
++		{"socks_auth", wrap(errors.New("username/password authentication failed " + gptMonitorErrorTestSecret)), "proxy_auth_required"},
++		{"generic", wrap(errors.New(gptMonitorErrorTestSecret)), "network_error"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			assertGPTMonitorSafeError(t, gptMonitorTransportError(test.err), test.code, 0)
++		})
++	}
++}
++
++func TestGPTMonitorHTTPErrorClassification(t *testing.T) {
++	for _, test := range []struct {
++		name   string
++		status int
++		body   string
++		code   string
++	}{
++		{"model_not_found", 404, `{"error":{"code":"model_not_found","message":"` + gptMonitorErrorTestSecret + `"}}`, "model_unavailable"},
++		{"model_unsupported_message", 400, `{"error":{"type":"invalid_request_error","message":"This model is not supported: ` + gptMonitorErrorTestSecret + `"}}`, "model_unavailable"},
++		{"reasoning_unsupported", 400, `{"error":{"code":"unsupported_value","message":"reasoning.effort xhigh is not supported by this model ` + gptMonitorErrorTestSecret + `"}}`, "reasoning_unsupported"},
++		{"top_level_model", 400, `{"code":"unsupported_model","message":"` + gptMonitorErrorTestSecret + `"}`, "model_unavailable"},
++		{"string_error", 400, `{"error":"Unknown model ` + gptMonitorErrorTestSecret + `"}`, "model_unavailable"},
++		{"auth", 401, `{"error":{"code":"model_not_found","message":"` + gptMonitorErrorTestSecret + `"}}`, "unauthorized"},
++		{"forbidden", 403, `<html>` + gptMonitorErrorTestSecret + `</html>`, "forbidden"},
++		{"proxy_auth", 407, gptMonitorErrorTestSecret, "proxy_auth_required"},
++		{"rate_limit", 429, gptMonitorErrorTestSecret, "rate_limited"},
++		{"quota", 429, `{"error":{"type":"insufficient_quota","message":"` + gptMonitorErrorTestSecret + `"}}`, "quota_exceeded"},
++		{"usage_quota", 429, `{"error":{"code":"usage_limit_reached","message":"` + gptMonitorErrorTestSecret + `"}}`, "quota_exceeded"},
++		{"upstream", 503, `{"error":{"code":"model_not_found","message":"` + gptMonitorErrorTestSecret + `"}}`, "upstream_error"},
++		{"unknown_code", 400, `{"error":{"code":"` + gptMonitorErrorTestSecret + `","message":"` + gptMonitorErrorTestSecret + `"}}`, "http_error"},
++		{"unknown_http", http.StatusTeapot, gptMonitorErrorTestSecret, "http_error"},
++		{"truncated_json", 404, `{"error":{"code":"model_not_found"`, "http_error"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			assertGPTMonitorSafeError(t, gptMonitorHTTPError(test.status, strings.NewReader(test.body)), test.code, test.status)
++		})
++	}
++}
++
++func TestGPTMonitorUpstreamErrorClassification(t *testing.T) {
++	for _, test := range []struct {
++		code      string
++		errorType string
++		message   string
++		want      string
++	}{
++		{"model_not_found", "invalid_request_error", gptMonitorErrorTestSecret, "model_unavailable"},
++		{"unsupported_reasoning_effort", "", gptMonitorErrorTestSecret, "reasoning_unsupported"},
++		{"", "invalid_request_error", "The requested model does not exist: " + gptMonitorErrorTestSecret, "model_unavailable"},
++		{"", "", "Unsupported value for reasoning.effort: " + gptMonitorErrorTestSecret, "reasoning_unsupported"},
++		{"token_expired", "", gptMonitorErrorTestSecret, "unauthorized"},
++		{"", "permission_error", gptMonitorErrorTestSecret, "forbidden"},
++		{"", "insufficient_quota", gptMonitorErrorTestSecret, "quota_exceeded"},
++		{"rate_limit_exceeded", "", gptMonitorErrorTestSecret, "rate_limited"},
++		{"", "server_error", gptMonitorErrorTestSecret, "upstream_error"},
++		{gptMonitorErrorTestSecret, gptMonitorErrorTestSecret, gptMonitorErrorTestSecret, "upstream_error"},
++	} {
++		t.Run(test.want+"_"+test.code, func(t *testing.T) {
++			assertGPTMonitorSafeError(t, gptMonitorUpstreamError(test.code, test.errorType, test.message), test.want, 0)
++		})
++	}
++}
++
++type gptMonitorCountingErrorReader struct {
++	remaining int
++	read      int
++}
++
++func (r *gptMonitorCountingErrorReader) Read(p []byte) (int, error) {
++	if r.remaining == 0 {
++		return 0, io.EOF
++	}
++	n := min(len(p), r.remaining)
++	for i := 0; i < n; i++ {
++		p[i] = 'x'
++	}
++	r.remaining -= n
++	r.read += n
++	return n, nil
++}
++
++type gptMonitorFailingErrorReader struct{}
++
++func (gptMonitorFailingErrorReader) Read([]byte) (int, error) {
++	return 0, errors.New(gptMonitorErrorTestSecret)
++}
++
++func TestGPTMonitorHTTPErrorBodyReadIsBounded(t *testing.T) {
++	body := &gptMonitorCountingErrorReader{remaining: 4 * gptMonitorHTTPErrorBodyLimit}
++	assertGPTMonitorSafeError(t, gptMonitorHTTPError(502, body), "upstream_error", 502)
++	if body.read != gptMonitorHTTPErrorBodyLimit {
++		t.Fatalf("read %d bytes, expected the %d-byte limit", body.read, gptMonitorHTTPErrorBodyLimit)
++	}
++	assertGPTMonitorSafeError(t, gptMonitorHTTPError(401, gptMonitorFailingErrorReader{}), "unauthorized", 401)
++	assertGPTMonitorSafeError(t, gptMonitorHTTPError(500, nil), "upstream_error", 500)
++}
++
++func TestGPTMonitorErrorDetailsRemainSafeWhenWrapped(t *testing.T) {
++	err := fmt.Errorf("unsafe wrapper %s: %w", gptMonitorErrorTestSecret, gptMonitorError("test_code", "安全错误说明"))
++	code, message, status := gptMonitorErrorDetails(err)
++	if code != "test_code" || message != "安全错误说明" || status != 0 {
++		t.Fatalf("unexpected safe details: %q %q %d", code, message, status)
++	}
++	unknown := errors.New(gptMonitorErrorTestSecret)
++	code, message, status = gptMonitorErrorDetails(unknown)
++	if code != "unknown_error" || strings.Contains(message, gptMonitorErrorTestSecret) || status != 0 {
++		t.Fatalf("unexpected fallback details: %q %q %d", code, message, status)
++	}
++	if code, message, status := gptMonitorErrorDetails(nil); code != "" || message != "" || status != 0 {
++		t.Fatal("nil error should have empty details")
++	}
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_management.go b/backend/internal/service/gpt_account_monitor_management.go
 new file mode 100644
@@ -2375,10 +3201,10 @@ index 0000000..5a01473
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe.go b/backend/internal/service/gpt_account_monitor_probe.go
 new file mode 100644
-index 0000000..dd9a1e5
+index 0000000..a323b54
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe.go
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,365 @@
 +package service
 +
 +import (
@@ -2387,7 +3213,6 @@ index 0000000..dd9a1e5
 +	"context"
 +	"encoding/json"
 +	"errors"
-+	"fmt"
 +	"io"
 +	"net"
 +	"net/http"
@@ -2405,14 +3230,13 @@ index 0000000..dd9a1e5
 +// Pin the full proxy identity so refresh cannot silently change egress or go direct.
 +type gptMonitorProxyContextKey struct{}
 +type gptMonitorPinnedProxy struct {
-+	ID        int64
-+	URL       string
-+	UpdatedAt time.Time
++	ID  int64
++	URL string
 +}
 +
 +func validateGPTMonitorProxy(proxy *Proxy) error {
 +	if proxy == nil || !proxy.IsActive() || proxy.IsExpired(time.Now()) || strings.TrimSpace(proxy.Host) == "" || proxy.Port < 1 || proxy.Port > 65535 {
-+		return errors.New("账号必须绑定启用且未过期的代理")
++		return gptMonitorError("proxy_unavailable", "账号必须绑定启用且未过期的代理")
 +	}
 +	if _, err := validGPTMonitorProxyURL(proxy.URL()); err != nil {
 +		return err
@@ -2422,13 +3246,13 @@ index 0000000..dd9a1e5
 +
 +func validateGPTMonitorAccount(account *Account) error {
 +	if account == nil || !account.IsActive() || !account.IsOpenAIOAuth() || account.IsShadow() || account.IsOpenAIAgentIdentity() {
-+		return errors.New("检测仅支持启用的独立 OpenAI OAuth 账号")
++		return gptMonitorError("account_ineligible", "检测仅支持启用的独立 OpenAI OAuth 账号")
 +	}
 +	if account.ExpiresAt != nil && !account.ExpiresAt.After(time.Now()) {
-+		return errors.New("账号已过期（不改变调度）")
++		return gptMonitorError("account_expired", "账号已过期")
 +	}
 +	if account.ProxyID == nil || account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
-+		return errors.New("账号未绑定有效代理（不改变调度）")
++		return gptMonitorError("proxy_missing", "账号未绑定有效代理，请先绑定代理")
 +	}
 +	return validateGPTMonitorProxy(account.Proxy)
 +}
@@ -2438,10 +3262,10 @@ index 0000000..dd9a1e5
 +// caller's conditional scheduling update. Errors never count as a bad answer.
 +func (s *OpenAIGatewayService) ProbeGPTAccount(ctx context.Context, accountID int64, _ string, prompt string) (*Account, string, error) {
 +	if s == nil || s.accountRepo == nil || accountID <= 0 {
-+		return nil, "", errors.New("账号检测服务不可用")
++		return nil, "", gptMonitorError("service_unavailable", "账号检测服务不可用")
 +	}
 +	if strings.TrimSpace(prompt) == "" || len(prompt) > 8192 {
-+		return nil, "", errors.New("检测问题无效")
++		return nil, "", gptMonitorError("invalid_prompt", "检测问题无效")
 +	}
 +	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 +	defer cancel()
@@ -2449,49 +3273,58 @@ index 0000000..dd9a1e5
 +	if err != nil {
 +		return nil, "", err
 +	}
-+	client, transport, err := newGPTMonitorClient(account.Proxy.URL())
-+	if err != nil {
-+		return account, "", err
-+	}
-+	defer transport.CloseIdleConnections()
-+	answer, err := gptMonitorProbeWithClient(ctx, client, account, token, config.GPTAccountMonitorModel, prompt)
++	answer, err := gptMonitorProbeWithDo(ctx, func(req *http.Request) (*http.Response, error) {
++		return s.doGPTMonitorRequest(req, account)
++	}, account, token, prompt)
 +	return account, answer, err
 +}
 +
 +func (s *OpenAIGatewayService) resolveGPTMonitorIdentity(ctx context.Context, accountID int64) (*Account, string, error) {
 +	account, err := s.accountRepo.GetByID(ctx, accountID)
 +	if err != nil {
-+		return nil, "", errors.New("读取账号失败（不改变调度）")
++		return nil, "", gptMonitorError("account_read_failed", "读取账号失败")
 +	}
 +	if err := validateGPTMonitorAccount(account); err != nil {
 +		return nil, "", err
 +	}
 +	if account.ID != accountID {
-+		return nil, "", errors.New("账号已变化，请重新检测")
++		return nil, "", gptMonitorError("identity_changed", "账号已变化，请重新检测")
 +	}
 +	// The regular provider disables irrecoverably expired credentials. A monitor
 +	// must leave scheduling alone when token acquisition cannot be completed.
 +	if expires := account.GetCredentialAsTime("expires_at"); expires != nil && !expires.After(time.Now()) && strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" && !account.IsOpenAIPersonalAccessToken() {
-+		return nil, "", errors.New("访问令牌已过期且无法刷新（不改变调度）")
++		return nil, "", gptMonitorError("token_expired", "访问令牌已过期且无法刷新，请重新授权账号")
 +	}
-+	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL(), UpdatedAt: account.Proxy.UpdatedAt}
++	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL()}
 +	ctx = context.WithValue(ctx, gptMonitorProxyContextKey{}, pinned)
 +	token, _, err := s.GetAccessToken(ctx, account)
 +	if err != nil || strings.TrimSpace(token) == "" {
-+		return nil, "", errors.New("获取账号访问令牌失败（不改变调度）")
++		if ctx.Err() != nil {
++			return nil, "", gptMonitorTransportError(ctx.Err())
++		}
++		return nil, "", gptMonitorError("token_acquisition_failed", "获取或刷新账号访问令牌失败，请检查授权和代理")
 +	}
 +	account, err = s.accountRepo.GetByID(ctx, accountID)
 +	if err != nil {
-+		return nil, "", errors.New("重新读取账号失败（不改变调度）")
++		return nil, "", gptMonitorError("account_read_failed", "重新读取账号失败")
 +	}
 +	if err := validateGPTMonitorAccount(account); err != nil {
 +		return nil, "", err
 +	}
-+	if account.ID != accountID || account.Proxy.ID != pinned.ID || account.Proxy.URL() != pinned.URL || !account.Proxy.UpdatedAt.Equal(pinned.UpdatedAt) {
-+		return nil, "", errors.New("账号代理已变化，请重新检测")
++	if account.ID != accountID || account.Proxy.ID != pinned.ID || account.Proxy.URL() != pinned.URL {
++		return nil, "", gptMonitorError("proxy_changed", "账号代理已变化，请重新检测")
 +	}
 +	if token != account.GetOpenAIAccessToken() {
-+		return nil, "", errors.New("账号凭据已变化，请重新检测")
++		// The provider is cache-first. A normal refresh can leave that cached
++		// value behind the database snapshot; use the current persisted token
++		// with the current account headers rather than declaring a probe failure.
++		token = strings.TrimSpace(account.GetOpenAIAccessToken())
++		if token == "" {
++			return nil, "", gptMonitorError("token_acquisition_failed", "账号缺少访问令牌，请重新授权账号")
++		}
++		if expires := account.GetCredentialAsTime("expires_at"); !account.IsOpenAIPersonalAccessToken() && expires != nil && !expires.After(time.Now()) {
++			return nil, "", gptMonitorError("token_expired", "最新访问令牌已过期，请重新检测或重新授权账号")
++		}
 +	}
 +	return account, token, nil
 +}
@@ -2524,12 +3357,12 @@ index 0000000..dd9a1e5
 +func validGPTMonitorProxyURL(raw string) (*url.URL, error) {
 +	u, err := url.Parse(raw)
 +	if err != nil || u.Hostname() == "" || u.Fragment != "" || u.RawQuery != "" || (u.Path != "" && u.Path != "/") {
-+		return nil, errors.New("账号代理地址无效")
++		return nil, gptMonitorError("proxy_invalid", "账号代理地址无效")
 +	}
 +	switch u.Scheme {
 +	case "http", "https", "socks5", "socks5h":
 +	default:
-+		return nil, errors.New("账号代理协议不受支持")
++		return nil, gptMonitorError("proxy_invalid", "账号代理协议不受支持")
 +	}
 +	return u, nil
 +}
@@ -2544,13 +3377,18 @@ index 0000000..dd9a1e5
 +		DialContext:       (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 +		ForceAttemptHTTP2: true, MaxIdleConns: 1, MaxIdleConnsPerHost: 1,
 +		IdleConnTimeout: 30 * time.Second, TLSHandshakeTimeout: 15 * time.Second,
-+		ResponseHeaderTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second,
++		// The request context owns the configured probe deadline, including headers.
++		ResponseHeaderTimeout: 0, ExpectContinueTimeout: time.Second,
 +	}
 +	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 +	return client, transport, nil
 +}
 +
 +func gptMonitorProbeWithClient(ctx context.Context, client *http.Client, account *Account, token, _ string, prompt string) (string, error) {
++	return gptMonitorProbeWithDo(ctx, client.Do, account, token, prompt)
++}
++
++func gptMonitorProbeWithDo(ctx context.Context, do func(*http.Request) (*http.Response, error), account *Account, token, prompt string) (string, error) {
 +	// Fixed independently of saved settings, account mappings and routing aliases.
 +	// An unavailable model/effort is a probe error; never retry with another model.
 +	payload := map[string]any{
@@ -2561,11 +3399,11 @@ index 0000000..dd9a1e5
 +	}
 +	body, err := json.Marshal(payload)
 +	if err != nil {
-+		return "", errors.New("无法构造检测请求")
++		return "", gptMonitorError("invalid_request", "无法构造检测请求")
 +	}
 +	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexURL, bytes.NewReader(body))
 +	if err != nil {
-+		return "", errors.New("无法构造检测请求")
++		return "", gptMonitorError("invalid_request", "无法构造检测请求")
 +	}
 +	setOpenAIChatGPTAccountHeaders(req.Header, account)
 +	applyOpenAICodexProbeHeaders(req.Header)
@@ -2578,15 +3416,19 @@ index 0000000..dd9a1e5
 +	req.Header.Set("Content-Type", "application/json")
 +	req.Header.Set("Accept", "text/event-stream")
 +	req.Header.Set("OpenAI-Beta", "responses=experimental")
-+	resp, err := client.Do(req)
++	resp, err := do(req)
 +	if err != nil {
-+		return "", errors.New("上游连接失败或超时（不改变调度）")
++		return "", gptMonitorTransportError(err)
 +	}
 +	defer resp.Body.Close()
 +	if resp.StatusCode != http.StatusOK {
-+		return "", fmt.Errorf("上游 HTTP %d（不改变调度）", resp.StatusCode)
++		return "", gptMonitorHTTPError(resp.StatusCode, resp.Body)
 +	}
-+	return readGPTMonitorResponse(resp.Body)
++	answer, err := readGPTMonitorResponse(resp.Body)
++	if err != nil && ctx.Err() != nil {
++		return "", gptMonitorTransportError(ctx.Err())
++	}
++	return answer, err
 +}
 +
 +// Only response.completed with completed status and assistant output_text counts.
@@ -2598,9 +3440,14 @@ index 0000000..dd9a1e5
 +	var data []string
 +	var deltaBytes int
 +	sawTool := false
++	type upstreamError struct {
++		Code    string `json:"code"`
++		Type    string `json:"type"`
++		Message string `json:"message"`
++	}
 +	consume := func() (string, bool, error) {
 +		if limited.N <= 0 {
-+			return "", false, errors.New("上游响应超过大小限制")
++			return "", false, gptMonitorError("response_too_large", "上游响应超过大小限制")
 +		}
 +		if len(data) == 0 {
 +			return "", false, nil
@@ -2608,16 +3455,20 @@ index 0000000..dd9a1e5
 +		raw := strings.Join(data, "\n")
 +		data = nil
 +		if raw == "[DONE]" {
-+			return "", false, errors.New("响应缺少完整结束事件")
++			return "", false, gptMonitorError("incomplete_response", "响应缺少完整结束事件")
 +		}
 +		var event struct {
-+			Type  string `json:"type"`
-+			Delta string `json:"delta"`
-+			Item  struct {
++			Type    string        `json:"type"`
++			Delta   string        `json:"delta"`
++			Code    string        `json:"code"`
++			Message string        `json:"message"`
++			Error   upstreamError `json:"error"`
++			Item    struct {
 +				Type string `json:"type"`
 +			} `json:"item"`
 +			Response struct {
-+				Status string `json:"status"`
++				Status string        `json:"status"`
++				Error  upstreamError `json:"error"`
 +				Output []struct {
 +					Type    string `json:"type"`
 +					Role    string `json:"role"`
@@ -2629,22 +3480,31 @@ index 0000000..dd9a1e5
 +			} `json:"response"`
 +		}
 +		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-+			return "", false, errors.New("上游返回无效事件")
++			return "", false, gptMonitorError("invalid_response", "上游返回无效事件")
 +		}
 +		if isGPTMonitorToolEvent(event.Type) || isGPTMonitorToolEvent(event.Item.Type) || strings.HasSuffix(event.Item.Type, "_call") {
 +			sawTool = true
 +		}
 +		switch event.Type {
-+		case "error", "response.failed", "response.incomplete":
-+			return "", false, errors.New("上游响应失败或未完成")
++		case "error", "response.failed":
++			detail := event.Error
++			if detail.Code == "" && detail.Type == "" && detail.Message == "" {
++				detail = event.Response.Error
++			}
++			if detail.Code == "" && detail.Type == "" && detail.Message == "" {
++				detail = upstreamError{Code: event.Code, Message: event.Message}
++			}
++			return "", false, gptMonitorUpstreamError(detail.Code, detail.Type, detail.Message)
++		case "response.incomplete":
++			return "", false, gptMonitorError("incomplete_response", "上游响应未完成")
 +		case "response.output_text.delta":
 +			deltaBytes += len(event.Delta)
 +			if deltaBytes > 32768 {
-+				return "", false, errors.New("回答超过长度限制")
++				return "", false, gptMonitorError("response_too_large", "回答超过长度限制")
 +			}
 +		case "response.completed":
 +			if event.Response.Status != "completed" {
-+				return "", false, errors.New("上游响应状态未完成")
++				return "", false, gptMonitorError("incomplete_response", "上游响应状态未完成")
 +			}
 +			var output strings.Builder
 +			for _, item := range event.Response.Output {
@@ -2656,7 +3516,7 @@ index 0000000..dd9a1e5
 +				}
 +				for _, part := range item.Content {
 +					if part.Type == "refusal" {
-+						return "", false, errors.New("上游拒绝回答")
++						return "", false, gptMonitorError("response_refused", "上游拒绝回答")
 +					}
 +					if part.Type == "output_text" {
 +						output.WriteString(part.Text)
@@ -2664,14 +3524,14 @@ index 0000000..dd9a1e5
 +				}
 +			}
 +			if sawTool {
-+				return "", false, errors.New("检测响应包含工具调用，已忽略")
++				return "", false, gptMonitorError("unexpected_tool_call", "检测响应包含工具调用，已忽略")
 +			}
 +			answer := strings.TrimSpace(output.String())
 +			if answer == "" {
-+				return "", false, errors.New("上游没有返回最终文本")
++				return "", false, gptMonitorError("empty_response", "上游没有返回最终文本")
 +			}
 +			if len(answer) > 32768 {
-+				return "", false, errors.New("回答超过长度限制")
++				return "", false, gptMonitorError("response_too_large", "回答超过长度限制")
 +			}
 +			return answer, true, nil
 +		}
@@ -2691,12 +3551,15 @@ index 0000000..dd9a1e5
 +		}
 +	}
 +	if reader.Err() != nil {
-+		return "", errors.New("读取上游响应失败")
++		if errors.Is(reader.Err(), bufio.ErrTooLong) {
++			return "", gptMonitorError("response_too_large", "上游事件超过大小限制")
++		}
++		return "", gptMonitorError("stream_read_failed", "读取上游响应失败，连接可能已中断")
 +	}
 +	if answer, done, err := consume(); err != nil || done {
 +		return answer, err
 +	}
-+	return "", errors.New("上游响应中断，未收到完整回答")
++	return "", gptMonitorError("incomplete_response", "上游响应中断，未收到完整回答")
 +}
 +
 +func isGPTMonitorToolEvent(eventType string) bool {
@@ -2709,7 +3572,7 @@ index 0000000..dd9a1e5
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe_test.go b/backend/internal/service/gpt_account_monitor_probe_test.go
 new file mode 100644
-index 0000000..184c759
+index 0000000..e93912c
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe_test.go
 @@ -0,0 +1,496 @@
@@ -2994,8 +3857,8 @@ index 0000000..184c759
 +			cache := &gptMonitorProbeCache{token: "test-token"}
 +			s := &OpenAIGatewayService{accountRepo: repo, openAITokenProvider: &OpenAITokenProvider{tokenCache: cache}}
 +			snapshot, token, err := s.resolveGPTMonitorIdentity(context.Background(), 42)
-+			if change == "none" {
-+				if err != nil || snapshot != latest || token != "test-token" {
++			if change == "none" || change == "proxy timestamp" || change == "token" {
++				if err != nil || snapshot != latest || token != latest.GetOpenAIAccessToken() {
 +					t.Fatalf("valid reread: %v", err)
 +				}
 +			} else if err == nil {
@@ -3157,7 +4020,7 @@ index 0000000..184c759
 +	oauth := &OpenAIOAuthService{proxyRepo: &gptMonitorRefreshProxyRepo{proxy: account.Proxy}, oauthClient: client}
 +	provider := NewOpenAITokenProvider(repo, nil, oauth)
 +	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil), NewOpenAITokenRefresher(oauth, repo))
-+	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL(), UpdatedAt: account.Proxy.UpdatedAt}
++	pinned := gptMonitorPinnedProxy{ID: account.Proxy.ID, URL: account.Proxy.URL()}
 +	token, err := provider.GetAccessToken(context.WithValue(context.Background(), gptMonitorProxyContextKey{}, pinned), account)
 +	if err == nil || token != "" || client.calls != 1 {
 +		t.Fatalf("refresh failure reused stale token: calls=%d token=%q err=%v", client.calls, token, err)
@@ -3175,7 +4038,7 @@ index 0000000..184c759
 +		t.Run(change, func(t *testing.T) {
 +			a := gptMonitorTestAccount()
 +			a.Credentials["refresh_token"] = "refresh"
-+			pinned := gptMonitorPinnedProxy{ID: a.Proxy.ID, URL: a.Proxy.URL(), UpdatedAt: a.Proxy.UpdatedAt}
++			pinned := gptMonitorPinnedProxy{ID: a.Proxy.ID, URL: a.Proxy.URL()}
 +			p := *a.Proxy
 +			repo := &gptMonitorRefreshProxyRepo{proxy: &p}
 +			switch change {
@@ -3199,7 +4062,7 @@ index 0000000..184c759
 +			if err == nil {
 +				t.Fatal("expected controlled failure")
 +			}
-+			if change == "none" {
++			if change == "none" || change == "timestamp" {
 +				if client.calls != 1 || client.proxy != pinned.URL {
 +					t.Fatal("refresh did not use pinned proxy")
 +				}
@@ -3377,10 +4240,10 @@ index 0000000..9a2e1a2
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_service.go b/backend/internal/service/gpt_account_monitor_service.go
 new file mode 100644
-index 0000000..8bffb6c
+index 0000000..c800f53
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service.go
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,545 @@
 +package service
 +
 +import (
@@ -3428,6 +4291,9 @@ index 0000000..8bffb6c
 +	ExpectedGeneration int       `json:"expected_generation"`
 +	Schedulable        bool      `json:"schedulable"`
 +	Changed            bool      `json:"changed"`
++	ErrorCode          string    `json:"error_code,omitempty"`
++	HTTPStatus         int       `json:"http_status,omitempty"`
++	DurationMS         int64     `json:"duration_ms,omitempty"`
 +}
 +
 +type GPTAccountMonitorService struct {
@@ -3801,12 +4667,29 @@ index 0000000..8bffb6c
 +	r := GPTAccountMonitorResult{CheckedAt: time.Now().UTC(), Verdict: "error", Model: cfg.Model, ReasoningEffort: cfg.ReasoningEffort, ExpectedGeneration: cfg.ExpectedGeneration, Schedulable: listed.Schedulable}
 +	probeCtx, probeCancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutSeconds)*time.Second)
 +	snapshot, answer, err := s.probe(probeCtx, listed.ID, cfg.Model, cfg.Prompt)
++	probeContextErr := probeCtx.Err()
++	r.DurationMS = time.Since(r.CheckedAt).Milliseconds()
 +	probeCancel()
 +	if parent.Err() != nil {
 +		return
 +	}
 +	if err != nil {
-+		r.Message = "检测失败（网络、认证、代理、模型不可用或响应不完整），调度未改变"
++		_, _, receivedStatus := gptMonitorErrorDetails(err)
++		if probeContextErr != nil && receivedStatus == 0 {
++			err = gptMonitorTransportError(probeContextErr)
++		}
++		var detail string
++		r.ErrorCode, detail, r.HTTPStatus = gptMonitorErrorDetails(err)
++		if r.HTTPStatus != 0 && r.ErrorCode != "http_error" {
++			detail += fmt.Sprintf("（HTTP %d）", r.HTTPStatus)
++		}
++		if r.ErrorCode == "timeout" {
++			detail += fmt.Sprintf("（本次检测超时上限 %d 秒）", cfg.TimeoutSeconds)
++		}
++		r.Message = "检测失败：" + detail + "，调度未改变"
++		if snapshot != nil && snapshot.ID == listed.ID {
++			r.Schedulable = snapshot.Schedulable
++		}
 +		s.saveResult(parent, listed.ID, r)
 +		return
 +	}
@@ -3852,8 +4735,13 @@ index 0000000..8bffb6c
 +		return
 +	}
 +	changed, err := repo.SetGPTMonitorSchedulableIfMatch(writeCtx, snapshot, pass)
-+	if err != nil || !changed {
++	if err != nil {
 +		r.Verdict = "error"
++		r.ErrorCode = "scheduling_write_failed"
++		r.Message = "调度更新失败，请检查数据库连接和服务日志"
++	} else if !changed {
++		r.Verdict = "error"
++		r.ErrorCode = "snapshot_changed"
 +		r.Message = "账号或代理在检测期间变化，调度未改变"
 +	} else {
 +		r.Changed = true
@@ -3882,7 +4770,7 @@ index 0000000..8bffb6c
 +	if err != nil {
 +		s.logError(fmt.Sprintf("account=%d result persistence failed", id))
 +	}
-+	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] account=%d verdict=%s schedulable=%t changed=%t message=%s", id, result.Verdict, result.Schedulable, result.Changed, result.Message)
++	logger.LegacyPrintf("service.gpt_account_monitor", "[GPTAccountMonitor] account=%d verdict=%s schedulable=%t changed=%t error_code=%s http_status=%d duration_ms=%d message=%s", id, result.Verdict, result.Schedulable, result.Changed, result.ErrorCode, result.HTTPStatus, result.DurationMS, result.Message)
 +}
 +
 +func (s *GPTAccountMonitorService) logError(message string) {
@@ -3903,10 +4791,10 @@ index 0000000..8bffb6c
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_service_test.go b/backend/internal/service/gpt_account_monitor_service_test.go
 new file mode 100644
-index 0000000..6404bfc
+index 0000000..9784fd4
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service_test.go
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,212 @@
 +package service
 +
 +import (
@@ -3927,6 +4815,7 @@ index 0000000..6404bfc
 +	writes    map[int64]bool
 +	results   map[int64]GPTAccountMonitorResult
 +	casFail   bool
++	casErr    error
 +	listCalls int
 +}
 +
@@ -3939,6 +4828,9 @@ index 0000000..6404bfc
 +func (r *gptMonitorRepoStub) SetGPTMonitorSchedulableIfMatch(_ context.Context, a *Account, value bool) (bool, error) {
 +	r.mu.Lock()
 +	defer r.mu.Unlock()
++	if r.casErr != nil {
++		return false, r.casErr
++	}
 +	if r.casFail {
 +		return false, nil
 +	}
@@ -4115,6 +5007,282 @@ index 0000000..6404bfc
 +	require.Nil(t, s.done)
 +	require.Zero(t, r.listCalls)
 +}
+diff --git a/backend/internal/service/gpt_account_monitor_transport.go b/backend/internal/service/gpt_account_monitor_transport.go
+new file mode 100644
+index 0000000..7d61a65
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_transport.go
+@@ -0,0 +1,52 @@
++package service
++
++import (
++	"errors"
++	"io"
++	"net/http"
++)
++
++// doGPTMonitorRequest shares the normal OpenAI transport policy and connection
++// pool while keeping the probe on the exact account proxy that was validated.
++// Only protocol compatibility can fall back; proxy switching, direct routing,
++// redirects and gateway scheduling side effects are not part of this path.
++func (s *OpenAIGatewayService) doGPTMonitorRequest(req *http.Request, account *Account) (*http.Response, error) {
++	if req == nil {
++		return nil, errors.New("无法构造检测请求")
++	}
++	if err := validateGPTMonitorAccount(account); err != nil {
++		return nil, err
++	}
++	proxyURL := account.Proxy.URL()
++	ctx := WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)
++	ctx = WithHTTPUpstreamRedirectsDisabled(ctx)
++	req = req.WithContext(ctx)
++	if s != nil && s.httpUpstream != nil {
++		return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
++	}
++
++	// Small isolated service fixtures may not provide the shared transport.
++	// Preserve the same proxy and redirect restrictions in that fallback.
++	client, transport, err := newGPTMonitorClient(proxyURL)
++	if err != nil {
++		return nil, err
++	}
++	resp, err := client.Do(req)
++	if err != nil {
++		transport.CloseIdleConnections()
++		return resp, err
++	}
++	resp.Body = &gptMonitorTransportBody{ReadCloser: resp.Body, transport: transport}
++	return resp, nil
++}
++
++type gptMonitorTransportBody struct {
++	io.ReadCloser
++	transport *http.Transport
++}
++
++func (b *gptMonitorTransportBody) Close() error {
++	err := b.ReadCloser.Close()
++	b.transport.CloseIdleConnections()
++	return err
++}
+diff --git a/backend/internal/service/gpt_account_monitor_transport_test.go b/backend/internal/service/gpt_account_monitor_transport_test.go
+new file mode 100644
+index 0000000..de91d74
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_transport_test.go
+@@ -0,0 +1,150 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strconv"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++type gptMonitorTransportUpstream struct {
++	HTTPUpstream
++	do func(*http.Request, string, int64, int) (*http.Response, error)
++}
++
++func (u *gptMonitorTransportUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
++	return u.do(req, proxyURL, accountID, concurrency)
++}
++
++func TestGPTMonitorSharedTransportKeepsProxyIdentityAndDeadline(t *testing.T) {
++	account := gptMonitorTestAccount()
++	account.Concurrency = 4
++	account.Proxy.FallbackMode = FallbackModeDirect
++	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
++	defer cancel()
++	deadline, _ := ctx.Deadline()
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexURL, strings.NewReader(`{}`))
++	require.NoError(t, err)
++	req.Header.Set("Authorization", "Bearer test-token")
++	response := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(gptMonitorCompleted("iPhone 17")))}
++	calls := 0
++	s := &OpenAIGatewayService{httpUpstream: &gptMonitorTransportUpstream{do: func(actual *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
++		calls++
++		require.Equal(t, account.Proxy.URL(), proxyURL)
++		require.Equal(t, account.ID, accountID)
++		require.Equal(t, account.Concurrency, concurrency)
++		require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(actual.Context()))
++		require.True(t, HTTPUpstreamRedirectsDisabled(actual.Context()))
++		actualDeadline, ok := actual.Context().Deadline()
++		require.True(t, ok)
++		require.Equal(t, deadline, actualDeadline, "the configured probe budget must not shrink")
++		require.Equal(t, req.URL, actual.URL)
++		require.Equal(t, req.Header, actual.Header)
++		return response, nil
++	}}}
++	got, err := s.doGPTMonitorRequest(req, account)
++	require.NoError(t, err)
++	require.Same(t, response, got)
++	require.NoError(t, got.Body.Close())
++	require.Equal(t, 1, calls)
++	require.True(t, account.Schedulable)
++	require.False(t, HTTPUpstreamRedirectsDisabled(req.Context()), "request-specific policy must not mutate the caller's context")
++}
++
++func TestGPTMonitorSharedTransportFailureNeverSwitchesProxy(t *testing.T) {
++	for _, fallbackMode := range []string{FallbackModeDirect, FallbackModeProxy} {
++		t.Run(fallbackMode, func(t *testing.T) {
++			account := gptMonitorTestAccount()
++			account.Proxy.FallbackMode = fallbackMode
++			backupID := int64(99)
++			account.Proxy.BackupProxyID = &backupID
++			failure := errors.New("controlled transport failure")
++			calls := 0
++			s := &OpenAIGatewayService{httpUpstream: &gptMonitorTransportUpstream{do: func(_ *http.Request, proxyURL string, accountID int64, _ int) (*http.Response, error) {
++				calls++
++				require.Equal(t, account.Proxy.URL(), proxyURL)
++				require.Equal(t, account.ID, accountID)
++				return nil, failure
++			}}}
++			req, err := http.NewRequest(http.MethodPost, chatgptCodexURL, nil)
++			require.NoError(t, err)
++			_, err = s.doGPTMonitorRequest(req, account)
++			require.ErrorIs(t, err, failure)
++			require.Equal(t, 1, calls)
++			require.True(t, account.Schedulable)
++			require.Equal(t, StatusActive, account.Status)
++		})
++	}
++}
++
++func TestGPTMonitorSharedTransportRejectsMissingProxyBeforeRequest(t *testing.T) {
++	account := gptMonitorTestAccount()
++	account.Proxy = nil
++	s := &OpenAIGatewayService{httpUpstream: &gptMonitorTransportUpstream{do: func(*http.Request, string, int64, int) (*http.Response, error) {
++		t.Fatal("an invalid proxy must never reach the upstream transport")
++		return nil, nil
++	}}}
++	req, err := http.NewRequest(http.MethodPost, chatgptCodexURL, nil)
++	require.NoError(t, err)
++	_, err = s.doGPTMonitorRequest(req, account)
++	require.Error(t, err)
++	require.True(t, account.Schedulable)
++}
++
++func TestGPTMonitorSharedTransportPreservesCancellation(t *testing.T) {
++	account := gptMonitorTestAccount()
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexURL, nil)
++	require.NoError(t, err)
++	s := &OpenAIGatewayService{httpUpstream: &gptMonitorTransportUpstream{do: func(actual *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++		return nil, actual.Context().Err()
++	}}}
++	_, err = s.doGPTMonitorRequest(req, account)
++	require.ErrorIs(t, err, context.Canceled)
++}
++
++func TestGPTMonitorFallbackTransportIgnoresEnvironmentProxy(t *testing.T) {
++	var environmentHits atomic.Int32
++	environmentProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		environmentHits.Add(1)
++		w.WriteHeader(http.StatusBadGateway)
++	}))
++	defer environmentProxy.Close()
++	t.Setenv("HTTPS_PROXY", environmentProxy.URL)
++	t.Setenv("HTTP_PROXY", environmentProxy.URL)
++	t.Setenv("NO_PROXY", "*")
++	var accountHits atomic.Int32
++	accountProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
++		accountHits.Add(1)
++		require.Equal(t, http.MethodConnect, req.Method)
++		require.Equal(t, "chatgpt.com:443", req.Host)
++		w.WriteHeader(http.StatusBadGateway)
++	}))
++	defer accountProxy.Close()
++	parsedProxy, err := url.Parse(accountProxy.URL)
++	require.NoError(t, err)
++	port, err := strconv.Atoi(parsedProxy.Port())
++	require.NoError(t, err)
++	account := gptMonitorTestAccount()
++	account.Proxy.Host, account.Proxy.Port = parsedProxy.Hostname(), port
++	account.Proxy.FallbackMode = FallbackModeDirect
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatgptCodexURL, nil)
++	require.NoError(t, err)
++	_, err = (&OpenAIGatewayService{}).doGPTMonitorRequest(req, account)
++	require.Error(t, err)
++	require.Equal(t, int32(1), accountHits.Load())
++	require.Zero(t, environmentHits.Load())
++	require.True(t, account.Schedulable)
++}
+diff --git a/deploy/gpt-account-monitor/FIX-V2.md b/deploy/gpt-account-monitor/FIX-V2.md
+new file mode 100644
+index 0000000..9ccc39c
+--- /dev/null
++++ b/deploy/gpt-account-monitor/FIX-V2.md
+@@ -0,0 +1,56 @@
++# Sub2API 0.2.16 巡检修复版 v2
++
++此更新包用于已安装 `0184257-gpt-monitor` 的 Sub2API 0.2.16。新构建标记为 `0184257-gpt-monitor-v2`，应用版本仍为 0.2.16。包含 Linux amd64、arm64 程序。
++
++巡检的目标保持简单：使用账号绑定的代理、固定 `gpt-6-astra / XHigh` 检测；完整回答符合规则时开启调度，不符合时关闭调度；请求失败时保留原调度。调度写入只修改账号的 `schedulable` 开关。OAuth 必要的令牌刷新沿用宿主机制。
++
++本次修复：
++
++- 复用官方 OpenAI 连接池及 HTTP/2 代理兼容策略，取消巡检独有的 90 秒响应头硬上限，使用配置的检测期限。
++- 区分未绑定代理、代理认证、账号认证、限流、额度、模型不可用、连接超时和响应中断，记录安全错误代码、HTTP 状态及耗时。
++- 正常令牌刷新、使用统计和代理记录更新时间不再导致误报；仍使用账号本身的代理，不切换到直连。
++- 使用最新已保存的有效令牌处理旧缓存；正常令牌轮换不再被当作失败。
++- 调度数据库写入失败单独提示，不再与账号变更混为一谈。错误信息不输出令牌、代理密码或上游原始正文。
++
++## 更新现有巡检版
++
++将 `sub2api-0.2.16-gpt-monitor-v2.tar.gz` 和 `gpt-monitor-v2-SHA256SUMS.txt` 上传到服务器原 Compose 部署目录。进入该目录，执行：
++
++```sh
++grep '  sub2api-0.2.16-gpt-monitor-v2.tar.gz$' gpt-monitor-v2-SHA256SUMS.txt | sha256sum -c -
++tar -xzf sub2api-0.2.16-gpt-monitor-v2.tar.gz
++sh gpt-monitor-patch-0.2.16-v2/update.sh docker-compose.yml sub2api
++```
++
++按实际配置替换 Compose 文件名和服务名。更新脚本会短暂重建应用服务并等待健康，生成 `docker-compose.gpt-monitor-v2.yml`。它保留旧程序、旧巡检覆盖文件及官方 0.2.16 回滚记录。新旧程序放在不同目录；不要覆盖旧目录内正在挂载的二进制。
++
++更新后：
++
++```sh
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor-v2.yml exec -T sub2api /app/sub2api --version
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor-v2.yml logs --tail=200 sub2api
++```
++
++版本输出应包含 `0184257-gpt-monitor-v2`。刷新巡检页面，点击“立即巡检”；旧结果不会凭空变成新诊断，需等待本轮结果。没有代理的账号先在账号管理中绑定有效代理。后续应用启动使用原 Compose 文件和新的 v2 覆盖文件。
++
++## 恢复旧巡检程序
++
++```sh
++docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build --wait --wait-timeout 180 sub2api
++```
++
++如需卸载巡检并恢复官方 0.2.16，使用：
++
++```sh
++sh gpt-monitor-patch-0.2.16-v2/rollback.sh docker-compose.yml sub2api
++```
++
++恢复程序不会反向修改已经保存的调度开关。
++
++## 源码核对与验证范围
++
++用户提供的 `sub2api-0.2.16.zip` 内全部 4322 个文件，与官方基线提交 `01842576b3d5c1e2545b5a99ad555d36e28ed306` 一致；源码压缩包自身不含巡检扩展。本次修改基于该基线上的现有巡检补丁，没有数据库 schema 或迁移变更。
++
++后端巡检、账号调度、错误分类与连接路径进行了定向回归；前端 12 项页面/i18n 测试、TypeScript 检查和生产构建通过。更新脚本使用模拟 Docker 验证；Windows 下两项权限相关测试跳过。详见包内 `VALIDATION.txt`。
++
++用户提供的旧日志只有通用错误，无法恢复每个账号当时的真实上游原因。本次未连接服务器、真实账号或代理，实际网络是否恢复仍需更新后的巡检结果确认。
 diff --git a/deploy/gpt-account-monitor/README.md b/deploy/gpt-account-monitor/README.md
 new file mode 100644
 index 0000000..f13cb87
@@ -4836,12 +6004,506 @@ index 0000000..5d90f1f
 +
 +if __name__ == "__main__":
 +    unittest.main(verbosity=2)
+diff --git a/deploy/gpt-account-monitor/test_update.py b/deploy/gpt-account-monitor/test_update.py
+new file mode 100644
+index 0000000..f2e4cf6
+--- /dev/null
++++ b/deploy/gpt-account-monitor/test_update.py
+@@ -0,0 +1,329 @@
++"""Test the v2 updater with a fake Docker CLI; no daemon or accounts are used."""
++import hashlib
++import os
++from pathlib import Path
++import shutil
++import struct
++import subprocess
++import tempfile
++import unittest
++
++from test_scripts import BASH, HERE, IMAGE_ID, OFFICIAL_COMMIT, PATCH_COMMIT, shell_path
++
++
++NEW_COMMIT = "0184257-gpt-monitor-v2"
++FAKE_DOCKER = r"""#!/bin/sh
++set -eu
++printf '%s|' "$@" >> "$MOCK_DOCKER_LOG"
++printf '\n' >> "$MOCK_DOCKER_LOG"
++if [ "$1" = compose ]; then
++  shift
++  if [ "$1" = version ]; then printf 'Docker Compose version v2.39.0\n'; exit 0; fi
++  if [ "$1" = up ] && [ "$2" = --help ]; then printf '%s\n' '--wait --wait-timeout'; exit 0; fi
++  mode=base
++  while [ "$#" -gt 0 ]; do
++    case "$1" in
++      -f)
++        case "$2" in
++          *docker-compose.gpt-monitor-v2.yml) mode=new ;;
++          *docker-compose.gpt-monitor.yml) mode=old ;;
++          *docker-compose.gpt-monitor.rollback-0.2.16.yml) mode=official ;;
++        esac
++        shift 2 ;;
++      ps) printf '%s\n' "$MOCK_CONTAINER_ID"; exit 0 ;;
++      config)
++        if [ "$mode" = new ]; then [ "$MOCK_NEW_CONFIG_OK" = true ]; else [ "$MOCK_OLD_CONFIG_OK" = true ]; fi
++        exit ;;
++      exec)
++        if [ -f "$MOCK_STATE" ]; then
++          printf '2026-10-13 INFO stdlog Sub2API 0.2.16 (commit: %s, built: test)\n' "$MOCK_INSTALLED_COMMIT"
++        else
++          printf '2026-10-13 INFO stdlog Sub2API %s (commit: %s, built: test)\n' "$MOCK_VERSION" "$MOCK_COMMIT"
++        fi
++        exit 0 ;;
++      up)
++        [ "$MOCK_UP_OK" = true ] || exit 1
++        printf '%s' "$mode" > "$MOCK_STATE"
++        exit 0 ;;
++      *) exit 17 ;;
++    esac
++  done
++fi
++if [ "$1" = inspect ]; then
++  case "$3" in
++    '{{.Image}}') printf '%s\n' "$MOCK_IMAGE_ID" ;;
++    *) printf '%s\n' "$MOCK_MOUNTED_BINARY" ;;
++  esac
++  exit 0
++fi
++if [ "$1" = image ] && [ "$2" = inspect ]; then printf '%s\n' "$MOCK_PLATFORM"; exit 0; fi
++exit 18
++"""
++
++
++@unittest.skipUnless(BASH, "bash is needed; no Docker daemon is required")
++class MonitorUpdateScriptTest(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory(prefix="gpt-monitor-update-")
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name) / "deployment space ' $value"
++        self.root.mkdir()
++        self.bundle = self.root / "gpt-monitor-patch-0.2.16-v2"
++        self.bundle.mkdir()
++        self.fake_bin = self.root / "fake-bin"
++        self.fake_bin.mkdir()
++        self.base = self.root / "docker-compose.yml"
++        self.base.write_text("services:\n  custom_api:\n    image: weishaw/sub2api:0.2.15\n", encoding="utf-8", newline="\n")
++        shutil.copyfile(HERE / "update.sh", self.bundle / "update.sh")
++        (self.bundle / "UPSTREAM_BASE.txt").write_text(OFFICIAL_COMMIT + "\n", encoding="utf-8", newline="\n")
++        for arch, machine in (("amd64", 62), ("arm64", 183)):
++            binary = self.bundle / "bin" / ("linux-" + arch) / "sub2api"
++            binary.parent.mkdir(parents=True)
++            binary.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HH", 2, machine) + bytes(44))
++            binary.chmod(0o755)
++        self.old_binary = self.root / "gpt-monitor-patch-0.2.16" / "bin/linux-amd64/sub2api"
++        self.old_binary.parent.mkdir(parents=True)
++        self.old_binary.write_bytes(b"old mounted program must remain untouched")
++        self.old_override = self.root / "docker-compose.gpt-monitor.yml"
++        old_source = shell_path(self.old_binary).replace("'", "''").replace("$", "$$")
++        self.old_override.write_text(
++            f"services:\n  'custom_api':\n    image: '{IMAGE_ID}'\n    volumes:\n"
++            f"      - type: bind\n        source: '{old_source}'\n        target: /app/sub2api\n",
++            encoding="utf-8", newline="\n",
++        )
++        self.rollback = self.root / "docker-compose.gpt-monitor.rollback-0.2.16.yml"
++        self.rollback.write_text(
++            f"# Official Sub2API 0.2.16, commit {OFFICIAL_COMMIT}.\n"
++            "# Generated by gpt-monitor-patch-0.2.16/apply.sh. Keep for rollback.\n"
++            f"services:\n  'custom_api':\n    image: '{IMAGE_ID}'\n    pull_policy: never\n",
++            encoding="utf-8", newline="\n",
++        )
++        self.initial_files = {p: p.read_bytes() for p in (self.base, self.old_override, self.rollback, self.old_binary)}
++        self.new_override = self.root / "docker-compose.gpt-monitor-v2.yml"
++        docker = self.fake_bin / "docker"
++        docker.write_text(FAKE_DOCKER, encoding="utf-8", newline="\n")
++        docker.chmod(0o755)
++        self.log = self.root / "docker.log"
++        self.env = os.environ.copy()
++        self.env.update({
++            "MOCK_DOCKER_LOG": shell_path(self.log),
++            "MOCK_STATE": shell_path(self.root / "state"),
++            "MOCK_OLD_CONFIG_OK": "true",
++            "MOCK_NEW_CONFIG_OK": "true",
++            "MOCK_UP_OK": "true",
++            "MOCK_IMAGE_ID": IMAGE_ID,
++            "MOCK_VERSION": "0.2.16",
++            "MOCK_COMMIT": PATCH_COMMIT,
++            "MOCK_INSTALLED_COMMIT": NEW_COMMIT,
++            "MOCK_PLATFORM": "linux/amd64",
++            "MOCK_CONTAINER_ID": "a" * 64,
++            "MOCK_MOUNTED_BINARY": shell_path(self.old_binary),
++            "MOCK_BUNDLE": shell_path(self.bundle),
++        })
++        self.write_checksums()
++
++    def write_checksums(self):
++        entries = []
++        for path in sorted(self.bundle.rglob("*")):
++            if path.is_file() and path.name != "SHA256SUMS":
++                entries.append(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.relative_to(self.bundle).as_posix())
++        (self.bundle / "SHA256SUMS").write_text("\n".join(entries) + "\n", encoding="utf-8", newline="\n")
++
++    def run_script(self, args=None):
++        if args is None:
++            args = ["docker-compose.yml", "custom_api"]
++        launcher = 'export PATH="$1:$PATH"; shift; exec sh "$0" "$@"'
++        if os.name == "nt":
++            # Git Bash on NTFS ignores chmod for ELF files and reports them as
++            # nonexecutable. Model only that fixture mode bit on Windows; Linux
++            # runs the unmodified shell and tests actual executable permissions.
++            launcher = r'''
++export PATH="$1:$PATH"
++shift
++function [() {
++  if [[ "$#" = 3 && "$1" = -x ]]; then
++    case "$2" in "$MOCK_BUNDLE"/bin/linux-*/sub2api) builtin [ -f "$2" ]; return ;; esac
++  fi
++  builtin [ "$@"
++}
++. "$0" "$@"
++'''
++        return subprocess.run(
++            [BASH, "-c", launcher, shell_path(self.bundle / "update.sh"), shell_path(self.fake_bin), *args],
++            cwd=self.root, env=self.env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
++        )
++
++    def calls(self):
++        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
++
++    def recreates(self):
++        return [call for call in self.calls() if "|up|-d|" in call]
++
++    def assert_originals_unchanged(self):
++        for path, data in self.initial_files.items():
++            self.assertEqual(path.read_bytes(), data, str(path))
++
++    def assert_preflight_rejected(self, result):
++        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertFalse(self.new_override.exists())
++        self.assertEqual(self.recreates(), [])
++
++    def test_update_amd64_pins_image_and_preserves_recovery_files(self):
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assert_originals_unchanged()
++        override = self.new_override.read_text(encoding="utf-8")
++        self.assertIn(f"image: '{IMAGE_ID}'", override)
++        self.assertIn("'custom_api':", override)
++        self.assertIn("gpt-monitor-patch-0.2.16-v2/bin/linux-amd64/sub2api", override)
++        self.assertIn("deployment space '' $$value", override)
++        self.assertIn("read_only: true", override)
++        self.assertIn("create_host_path: false", override)
++        self.assertEqual(len(self.recreates()), 1)
++        self.assertIn("|--no-deps|--force-recreate|--pull|never|--no-build|--wait|--wait-timeout|180|custom_api|", self.recreates()[0])
++        self.assertNotIn("docker-compose.gpt-monitor.yml", self.recreates()[0])
++        self.assertNotIn("|down|", "\n".join(self.calls()))
++        self.assertIn("更新完成", result.stdout)
++
++    def test_update_arm64_uses_actual_image_architecture(self):
++        self.env["MOCK_PLATFORM"] = "linux/arm64"
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertIn("bin/linux-arm64/sub2api", self.new_override.read_text(encoding="utf-8"))
++        self.assert_originals_unchanged()
++
++    def test_defaults_select_sub2api(self):
++        for path in (self.base, self.old_override, self.rollback):
++            path.write_text(path.read_text(encoding="utf-8").replace("custom_api", "sub2api"), encoding="utf-8", newline="\n")
++        result = self.run_script(args=[])
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertIn("'sub2api':", self.new_override.read_text(encoding="utf-8"))
++
++    def test_wrong_package_baseline_rejected_even_with_valid_checksum(self):
++        (self.bundle / "UPSTREAM_BASE.txt").write_text("bad-baseline\n", encoding="utf-8", newline="\n")
++        self.write_checksums()
++        self.assert_preflight_rejected(self.run_script())
++        self.assertEqual(self.calls(), [])
++
++    def test_wrong_current_version_marker_or_architecture_rejected(self):
++        for key, value in (("MOCK_VERSION", "0.2.15"), ("MOCK_COMMIT", OFFICIAL_COMMIT), ("MOCK_COMMIT", NEW_COMMIT), ("MOCK_COMMIT", "unknown"), ("MOCK_PLATFORM", "linux/386")):
++            with self.subTest(key=key, value=value):
++                original = self.env[key]
++                self.env[key] = value
++                self.assert_preflight_rejected(self.run_script())
++                self.env[key] = original
++                self.assert_originals_unchanged()
++
++    def test_preexisting_v2_config_never_overwritten(self):
++        self.new_override.write_bytes(b"keep existing v2 config")
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertEqual(self.new_override.read_bytes(), b"keep existing v2 config")
++        self.assertEqual(self.calls(), [])
++
++    def test_tampered_checksum_stops_before_docker(self):
++        with (self.bundle / "bin/linux-amd64/sub2api").open("ab") as stream:
++            stream.write(b"tampered")
++        self.assert_preflight_rejected(self.run_script())
++        self.assertEqual(self.calls(), [])
++
++    def test_manifest_must_cover_binaries_and_reject_parent_paths(self):
++        checksum = self.bundle / "SHA256SUMS"
++        original = checksum.read_text(encoding="utf-8")
++        for content in ("\n".join(line for line in original.splitlines() if "linux-amd64" not in line) + "\n", original + "0" * 64 + "  ../docker-compose.yml\n"):
++            with self.subTest(content=content[-80:]):
++                checksum.write_text(content, encoding="utf-8", newline="\n")
++                self.assert_preflight_rejected(self.run_script())
++                self.assertEqual(self.calls(), [])
++
++    def test_invalid_elf_or_wrong_elf_architecture_rejected(self):
++        binary = self.bundle / "bin/linux-amd64/sub2api"
++        original = binary.read_bytes()
++        for content in (b"#!/bin/sh\nexit 0\n", original[:18] + struct.pack("<H", 183) + original[20:]):
++            with self.subTest(content=content[:20]):
++                binary.write_bytes(content)
++                self.write_checksums()
++                self.assert_preflight_rejected(self.run_script())
++                self.assertEqual(self.calls(), [])
++
++    def test_missing_old_override_or_rollback_rejected(self):
++        for path in (self.old_override, self.rollback):
++            with self.subTest(path=path.name):
++                data = path.read_bytes()
++                path.unlink()
++                self.assert_preflight_rejected(self.run_script())
++                path.write_bytes(data)
++                self.assertEqual(self.calls(), [])
++
++    def test_changed_rollback_record_rejected_without_rewrite(self):
++        self.rollback.write_bytes(self.rollback.read_bytes() + b"# externally changed\n")
++        changed = self.rollback.read_bytes()
++        self.assert_preflight_rejected(self.run_script())
++        self.assertEqual(self.rollback.read_bytes(), changed)
++
++    def test_invalid_image_id_and_multiple_containers_rejected(self):
++        for key, value in (("MOCK_IMAGE_ID", "sha256:123"), ("MOCK_IMAGE_ID", "sha256:" + "g" * 64), ("MOCK_CONTAINER_ID", "a" * 64 + "\n" + "b" * 64)):
++            with self.subTest(key=key):
++                original = self.env[key]
++                self.env[key] = value
++                self.assert_preflight_rejected(self.run_script())
++                self.env[key] = original
++
++    def test_current_mount_cannot_be_new_bundle(self):
++        self.env["MOCK_MOUNTED_BINARY"] = shell_path(self.bundle / "bin/linux-amd64/sub2api")
++        self.assert_preflight_rejected(self.run_script())
++
++    def test_current_mount_cannot_share_new_binary_inode(self):
++        binary = self.bundle / "bin/linux-amd64/sub2api"
++        self.old_binary.unlink()
++        os.link(binary, self.old_binary)
++        self.assert_preflight_rejected(self.run_script())
++
++    def test_old_configuration_failure_prevents_any_new_file(self):
++        self.env["MOCK_OLD_CONFIG_OK"] = "false"
++        self.assert_preflight_rejected(self.run_script())
++        self.assert_originals_unchanged()
++
++    def test_new_configuration_failure_keeps_file_but_never_recreates(self):
++        self.env["MOCK_NEW_CONFIG_OK"] = "false"
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertTrue(self.new_override.exists())
++        self.assertEqual(self.recreates(), [])
++        self.assert_originals_unchanged()
++
++    def test_failed_start_keeps_both_recovery_paths(self):
++        self.env["MOCK_UP_OK"] = "false"
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertTrue(self.new_override.exists())
++        self.assert_originals_unchanged()
++        self.assertIn("rollback.sh", result.stderr)
++
++    def test_wrong_installed_marker_does_not_report_success(self):
++        self.env["MOCK_INSTALLED_COMMIT"] = PATCH_COMMIT
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertEqual(len(self.recreates()), 1)
++        self.assertNotIn("更新完成", result.stdout)
++        self.assert_originals_unchanged()
++
++    @unittest.skipIf(os.name == "nt", "Windows symlink privileges vary; run this check on Linux")
++    def test_symlink_binary_rejected(self):
++        binary = self.bundle / "bin/linux-amd64/sub2api"
++        external = self.root / "external-binary"
++        binary.rename(external)
++        binary.symlink_to(external)
++        self.write_checksums()
++        self.assert_preflight_rejected(self.run_script())
++        self.assertEqual(self.calls(), [])
++
++    @unittest.skipIf(os.name == "nt", "NTFS does not represent the fixture ELF execute mode")
++    def test_nonexecutable_binary_rejected(self):
++        (self.bundle / "bin/linux-amd64/sub2api").chmod(0o644)
++        self.assert_preflight_rejected(self.run_script())
++        self.assertEqual(self.calls(), [])
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/deploy/gpt-account-monitor/update.sh b/deploy/gpt-account-monitor/update.sh
+new file mode 100644
+index 0000000..093f92f
+--- /dev/null
++++ b/deploy/gpt-account-monitor/update.sh
+@@ -0,0 +1,153 @@
++#!/bin/sh
++# Update an existing 0.2.16 monitor patch without replacing its mounted binary.
++set -eu
++set -f
++
++fail() { printf '更新失败：%s\n' "$*" >&2; exit 1; }
++[ "$#" -le 2 ] || fail '用法：sh gpt-monitor-patch-0.2.16-v2/update.sh [docker-compose.yml] [sub2api]'
++compose_file=docker-compose.yml
++service=sub2api
++if [ "$#" -ge 1 ]; then compose_file=$1; fi
++if [ "$#" -ge 2 ]; then service=$2; fi
++case "$service" in ''|*[!a-zA-Z0-9_.-]*) fail '服务名无效' ;; esac
++
++# Check every component, including the script path, before resolving physical
++# directories. A symlink must not turn the new package into the old package.
++no_symlinks() {
++  checked_path=$1
++  case "$checked_path" in /*) ;; *) checked_path="$(pwd -P)/$checked_path" ;; esac
++  while [ "$checked_path" != / ]; do
++    [ ! -L "$checked_path" ] || fail '部署文件和程序路径不能包含符号链接'
++    checked_path=$(dirname -- "$checked_path")
++  done
++}
++case "$compose_file$0" in *'
++'*) fail '路径不能包含换行符' ;; esac
++no_symlinks "$compose_file"
++no_symlinks "$0"
++[ -f "$compose_file" ] || fail '找不到原 Compose 文件；请在原部署目录执行'
++compose_dir=$(CDPATH= cd -- "$(dirname -- "$compose_file")" && pwd -P)
++[ "$(pwd -P)" = "$compose_dir" ] || fail '请先进入原 Compose 文件所在目录'
++compose_file="$compose_dir/$(basename -- "$compose_file")"
++bundle_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
++case "$bundle_dir$compose_file" in *'
++'*) fail '路径不能包含换行符' ;; esac
++[ "$(basename -- "$bundle_dir")" = gpt-monitor-patch-0.2.16-v2 ] || fail '请将新版解压到独立的 gpt-monitor-patch-0.2.16-v2 目录，不要覆盖旧包'
++old_override="$compose_dir/docker-compose.gpt-monitor.yml"
++rollback_file="$compose_dir/docker-compose.gpt-monitor.rollback-0.2.16.yml"
++override_file="$compose_dir/docker-compose.gpt-monitor-v2.yml"
++for required in "$old_override" "$rollback_file" "$bundle_dir/SHA256SUMS" "$bundle_dir/UPSTREAM_BASE.txt"; do
++  no_symlinks "$required"
++  [ -f "$required" ] || fail '缺少旧巡检覆盖文件、官方回滚记录或新版校验文件；未修改部署'
++done
++[ ! -e "$override_file" ] && [ ! -L "$override_file" ] || fail 'docker-compose.gpt-monitor-v2.yml 已存在；不会覆盖，请先检查现有部署'
++for command_name in sha256sum awk sed od tr cmp cut docker; do
++  command -v "$command_name" >/dev/null 2>&1 || fail "系统缺少 $command_name"
++done
++
++# Require a safe, complete checksum list before opening any listed file. The
++# list is an integrity check, not a signature; obtain the package from its author.
++awk '
++  length($1) != 64 || $1 ~ /[^0-9a-f]/ || substr($0,65,2) != "  " { exit 1 }
++  {
++    name=substr($0,67)
++    if (name !~ /^[a-zA-Z0-9_.\/-]+$/ || name ~ /^\// || name ~ /(^|\/)\.\.?(\/|$)/ || seen[name]++) exit 1
++  }
++  END { if (!seen["update.sh"] || !seen["UPSTREAM_BASE.txt"] || !seen["bin/linux-amd64/sub2api"] || !seen["bin/linux-arm64/sub2api"]) exit 1 }
++' "$bundle_dir/SHA256SUMS" || fail 'SHA256SUMS 格式无效或未覆盖关键文件'
++while IFS= read -r checksum_line || [ -n "$checksum_line" ]; do
++  checksum_path=$(printf '%s' "$checksum_line" | cut -c 67-)
++  no_symlinks "$bundle_dir/$checksum_path"
++  [ -f "$bundle_dir/$checksum_path" ] || fail '校验清单中的文件缺失'
++done < "$bundle_dir/SHA256SUMS"
++(cd "$bundle_dir" && sha256sum -c SHA256SUMS) || fail '文件校验失败，请重新获取完整安装包'
++printf '%s\n' '01842576b3d5c1e2545b5a99ad555d36e28ed306' | cmp -s - "$bundle_dir/UPSTREAM_BASE.txt" || fail '新版安装包构建基线不符'
++for architecture in amd64 arm64; do
++  candidate="$bundle_dir/bin/linux-$architecture/sub2api"
++  no_symlinks "$candidate"
++  [ -f "$candidate" ] && [ -x "$candidate" ] || fail '程序缺少执行权限；请在 Linux 上用 tar 重新解压'
++  magic=$(od -An -tx1 -N7 "$candidate" | tr -d ' \n')
++  kind=$(od -An -tx1 -j16 -N2 "$candidate" | tr -d ' \n')
++  machine=$(od -An -tx1 -j18 -N2 "$candidate" | tr -d ' \n')
++  [ "$magic" = 7f454c46020101 ] || fail '程序不是受支持的 64 位小端 ELF 文件'
++  case "$kind" in 0200|0300) ;; *) fail 'ELF 程序类型无效' ;; esac
++  case "$architecture:$machine" in amd64:3e00|arm64:b700) ;; *) fail 'ELF 程序架构与目录不符' ;; esac
++done
++
++docker compose version >/dev/null 2>&1 || fail '需要 Docker Compose v2'
++up_help=$(docker compose up --help) || fail '无法检查 Compose 启动选项'
++case "$up_help" in *--wait-timeout*) ;; *) fail '需要支持 --wait 和 --wait-timeout 的 Docker Compose' ;; esac
++old_compose() { docker compose -f "$compose_file" -f "$old_override" "$@"; }
++new_compose() { docker compose -f "$compose_file" -f "$override_file" "$@"; }
++container_id=$(old_compose ps -q "$service") || fail '读取现有 Compose 服务失败'
++case "$container_id" in ''|*[!0-9a-f]*) fail '必须有且只有一个正在运行的指定服务；多副本请手动操作' ;; esac
++current_version=$(old_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取当前程序版本；未修改容器'
++version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
++commit=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<=NF;i++) if ($i=="Sub2API") { if (i+3<=NF && $(i+2)=="(commit:") { value=$(i+3); sub(/,$/,"",value); print value } exit } }')
++[ "$version" = 0.2.16 ] || fail '仅支持当前运行版本 0.2.16；未修改容器'
++[ "$commit" != 0184257-gpt-monitor-v2 ] || fail '当前已经运行此新版，无需重复更新'
++[ "$commit" = 0184257-gpt-monitor ] || fail '当前构建标记不符：仅支持从 0184257-gpt-monitor 更新'
++image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
++image_hash=${image_id#sha256:}
++[ "$image_id" != "$image_hash" ] && [ "${#image_hash}" -eq 64 ] || fail '无法确认当前容器的完整镜像 ID'
++case "$image_hash" in *[!0-9a-f]*) fail '无法确认当前容器的完整镜像 ID' ;; esac
++# Verify the existing official rollback record exactly; never rewrite it.
++cat <<EOF | cmp -s - "$rollback_file" || fail '官方 0.2.16 回滚记录与当前镜像或服务不符；未修改容器'
++# Official Sub2API 0.2.16, commit 01842576b3d5c1e2545b5a99ad555d36e28ed306.
++# Generated by gpt-monitor-patch-0.2.16/apply.sh. Keep for rollback.
++services:
++  '$service':
++    image: '$image_id'
++    pull_policy: never
++EOF
++platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
++case "$platform" in
++  linux/amd64) binary="$bundle_dir/bin/linux-amd64/sub2api" ;;
++  linux/arm64) binary="$bundle_dir/bin/linux-arm64/sub2api" ;;
++  *) fail '仅支持 Linux amd64 和 arm64 镜像' ;;
++esac
++mounted_binary=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/sub2api"}}{{.Source}}{{println}}{{end}}{{end}}' "$container_id") || fail '读取当前程序挂载源失败'
++case "$mounted_binary" in
++  ''|*'
++'*) fail '当前程序挂载源不明确；未修改容器' ;;
++  /*) ;;
++  *) fail '当前程序挂载源必须为本机绝对路径' ;;
++esac
++no_symlinks "$mounted_binary"
++[ -f "$mounted_binary" ] || fail '当前程序挂载源不在本机；请按实际 Docker 环境手动更新'
++case "$mounted_binary" in "$bundle_dir"/*) fail '新版目录已经被当前容器挂载；请使用独立目录' ;; esac
++[ ! "$binary" -ef "$mounted_binary" ] || fail '新版程序与旧挂载程序是同一个文件；请重新独立解压'
++old_compose config --quiet || fail '原巡检 Compose 配置检查失败；未修改部署'
++docker compose -f "$compose_file" -f "$rollback_file" config --quiet || fail '官方回滚 Compose 配置检查失败；未修改部署'
++
++# This is the first write. Preserve both old configuration files and the old
++# binary so operators can restore the preceding patch or the official build.
++yaml_binary=$(printf '%s' "$binary" | sed "s/'/''/g" | sed 's/\$/$$/g')
++(
++  umask 077
++  set -C
++  cat > "$override_file" <<EOF
++# Generated by gpt-monitor-patch-0.2.16-v2/update.sh. Keep both package directories.
++services:
++  '$service':
++    image: '$image_id'
++    pull_policy: never
++    volumes:
++      - type: bind
++        source: '$yaml_binary'
++        target: /app/sub2api
++        read_only: true
++        bind:
++          create_host_path: false
++EOF
++) || fail '创建新版覆盖文件失败；未修改容器'
++new_compose config --quiet || fail '新版 Compose 配置检查失败；保留 v2 文件供检查，未重建容器'
++new_compose up -d --no-deps --force-recreate --pull never --no-build --wait --wait-timeout 180 "$service" || fail '新版服务启动或健康检查失败；可使用原巡检覆盖文件恢复旧补丁，或 rollback.sh 恢复官方 0.2.16'
++installed_version=$(new_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法核验新版；请检查容器日志或使用原覆盖文件恢复'
++case "$installed_version" in
++  *'Sub2API 0.2.16 (commit: 0184257-gpt-monitor-v2,'*) ;;
++  *) fail '服务已重建，但新版构建标记不符；请检查日志或使用原覆盖文件恢复' ;;
++esac
++printf '\n更新完成：Sub2API 0.2.16，构建标记 0184257-gpt-monitor-v2。\n'
++printf '后续启动使用原 Compose 文件和 docker-compose.gpt-monitor-v2.yml；请保留新旧两个安装包目录。\n'
++printf '旧巡检覆盖文件及官方回滚记录均已保留：原覆盖文件可恢复旧补丁，rollback.sh 可恢复官方 0.2.16。\n'
 diff --git a/frontend/src/api/admin/gptAccountMonitor.ts b/frontend/src/api/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000..e79225d
+index 0000000..b56fa3f
 --- /dev/null
 +++ b/frontend/src/api/admin/gptAccountMonitor.ts
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,63 @@
 +import { apiClient } from '../client'
 +
 +export const GPT_ACCOUNT_MONITOR_MODEL = 'gpt-6-astra'
@@ -4876,6 +6538,9 @@ index 0000000..e79225d
 +  expected_generation: number
 +  schedulable: boolean
 +  changed: boolean
++  error_code?: string
++  http_status?: number
++  duration_ms?: number
 +}
 +
 +export interface GPTAccountMonitorStatus {
@@ -5306,10 +6971,10 @@ index 0000000..b484d0c
 +</style>
 diff --git a/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
 new file mode 100644
-index 0000000..e9847f3
+index 0000000..b438800
 --- /dev/null
 +++ b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,191 @@
 +import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import GPTAccountMonitorView from '../GPTAccountMonitorView.vue'
@@ -5334,7 +6999,7 @@ index 0000000..e9847f3
 +const status: GPTAccountMonitorStatus = { enabled: true, running: false, last_run: '2026-10-13T06:00:00Z', next_run: '2026-10-13T06:30:00Z', message: '', total_accounts: 3, accounts: [
 +  { account_id: 7, name: 'OAuth primary', proxy_name: 'Proxy A', checked_at: '2026-10-13T06:00:00Z', verdict: 'normal', answer: 'iPhone 17 Pro', message: '回答符合规则', model: 'gpt-6-astra', reasoning_effort: 'xhigh', expected_generation: 17, schedulable: true, changed: true },
 +  { account_id: 8, name: 'OAuth other', proxy_name: 'Proxy B', checked_at: '2026-10-13T06:00:00Z', verdict: 'abnormal', answer: hostile, message: '回答不符合规则', model: 'gpt-5.4', expected_generation: 17, schedulable: false, changed: true },
-+  { account_id: 9, name: 'Proxy error', checked_at: null, verdict: 'error', message: '代理异常', model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: false },
++  { account_id: 9, name: 'Proxy error', checked_at: null, verdict: 'error', message: '检测失败：账号认证失败，访问令牌无效或已过期（HTTP 401），调度未改变', error_code: 'unauthorized', http_status: 401, duration_ms: 2500, model: 'gpt-5.4', expected_generation: 17, schedulable: true, changed: false },
 +] }
 +function mountView() {
 +  return mount(GPTAccountMonitorView, { global: {
@@ -5431,6 +7096,7 @@ index 0000000..e9847f3
 +    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(3)
 +    expect(wrapper.find('img').exists()).toBe(false)
 +    expect(wrapper.text()).toContain(hostile)
++    expect(wrapper.text()).toContain('访问令牌无效或已过期（HTTP 401），调度未改变')
 +    expect(wrapper.get('[data-testid=count-normal]').text()).toBe('1')
 +    expect(wrapper.get('[data-testid=count-abnormal]').text()).toBe('1')
 +    expect(wrapper.get('[data-testid=count-error]').text()).toBe('1')

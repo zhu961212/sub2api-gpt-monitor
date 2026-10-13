@@ -1,14 +1,16 @@
-Built-in GPT account monitor for official Sub2API 0.2.16.
-Exact release baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
-Build marker: 0184257-gpt-monitor. Date: 2026-10-13.
-Database migrations and Ent schema exactly match official 0.2.16; the monitor adds no schema migrations.
-Monitor requests always send model=gpt-6-astra and reasoning.effort=xhigh; account model mappings cannot change them.
-Legacy saved/environment/API configuration normalizes the fixed fields while retaining other settings.
-Unsupported models, HTTP failures and incomplete responses preserve scheduling without fallback.
-Backend: targeted monitor config, service, repository, handler and server cleanup tests passed.
-Frontend: 12 UI/i18n tests, complete TypeScript check and fresh production build passed.
-Deployment: fake Docker tests cover precise baseline checks, prefixed logs, integrity checks, both architectures and rollback retaining official 0.2.16.
-Patch applies to the exact official tag in an isolated Git index.
-Both Linux binaries embed the rebuilt frontend; ELF architecture and source revision verified.
-The installation archive checksums and source ZIP integrity are verified.
-No live GPT account, proxy, database or user Docker deployment was contacted; real OAuth model availability and scheduling await target verification.
+Sub2API 0.2.16 built-in monitor fix v2; 2026-10-13.
+Build marker: 0184257-gpt-monitor-v2. Exact baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
+All 4322 files of the user-supplied sub2api-0.2.16.zip match the official baseline.
+No migration or Ent schema changes. Original model=gpt-6-astra and reasoning.effort=xhigh retained.
+Probe uses account proxy and official pooled OpenAI transport policy with redirects disabled.
+Errors carry sanitized category, HTTP status and duration. Failed requests preserve scheduling.
+Token refresh/usage timestamps do not invalidate completed probes; scheduling writes only change schedulable.
+Backend targeted monitor config/service/repository/handler regressions passed.
+Service startup/cleanup, shared transport privacy and proxy isolation regressions passed.
+Frontend: 12 UI/i18n tests, TypeScript build check and fresh Vite production build passed.
+Deployment updater: 18 fake-Docker tests passed; 2 Windows-specific permission tests skipped.
+Updater shell syntax checked. No actual Docker daemon or PostgreSQL integration exercised.
+Both Linux binaries embed the rebuilt frontend; ELF architecture/build flags verified.
+Source patch applies to the baseline in an isolated Git index; TAR hashes and source ZIP verified.
+No server deployment, real OAuth account, real proxy or database was contacted.
+Actual upstream failure causes and restored connectivity require post-installation rechecking.
