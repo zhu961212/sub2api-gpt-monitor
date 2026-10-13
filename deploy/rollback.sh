@@ -1,5 +1,5 @@
 #!/bin/sh
-# Restore the exact previous program/configuration chain; never alter data.
+# Restore the program/configuration chain saved before intelligence v2; never alter data.
 set -eu
 set -f
 . "$(dirname -- "$0")/common.sh"

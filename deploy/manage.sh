@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manage the patch using the exact project and configuration chain saved by updater.
+# Manage intelligence v2 using the project and configuration chain saved by updater.
 set -eu
 set -f
 . "$(dirname -- "$0")/common.sh"

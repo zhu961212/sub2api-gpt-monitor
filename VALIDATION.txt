@@ -1,29 +1,30 @@
-Sub2API 0.2.16 intelligence check and scheduling patch; 2026-10-13, Asia/Shanghai.
+Sub2API 0.2.16 intelligence check v2 patch; 2026-10-13, Asia/Shanghai.
 Official baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
-Version: 0.2.16; marker: 0184257-gpt-monitor-patch. Linux amd64 and arm64 only.
+Version: 0.2.16; marker: 0184257-intelligence-v2. Linux amd64 and arm64 only.
 
-Cleanup removed the obsolete answer matcher and moved test-only wrappers out of production.
-Single-account/automatic scheduling, two confirmations, proxy isolation and scheduling CAS remain covered.
+Changes verified this round:
+- Account-management detection controls removed; all controls reside on the renamed intelligence-check page.
+- Accounts at 100% usage skip detection without changing scheduling.
+- Separate v2 package/Compose records preserve upgrades and rollback from the previous patch.
 
 Backend passed:
-go test ./internal/service -run 'GPTMonitor|GPTAccountMonitor' -count=1
-go test ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTMonitor|GPTAccountMonitor|ProvideCleanup' -count=1
-gofmt and git diff --check
+- go test ./internal/service -run 'GPTMonitor|GPTAccountMonitor' -count=1
+- go test ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTMonitor|GPTAccountMonitor|ProvideCleanup' -count=1
+- Quota regressions cover 5h/week exhaustion, elapsed absolute/relative resets, stale snapshots, pre-token rejection, post-refresh reread rejection, and automatic/bulk/single/followup skipped results.
+- gofmt and source git diff --check passed. No repository projections or schema changed.
 
-Frontend: 72 tests in 7 relevant API/composable/dialog/account/monitor/i18n files passed.
-vue-tsc --noEmit and Vite production build passed; backend/internal/web/dist refreshed.
-Existing Vite warnings concern Browserslist data, mixed imports and chunk size.
-An incidental pnpm workspace file was removed and the unchanged lockfile restored.
+Frontend passed: 83 tests in 7 related files, vue-tsc --noEmit, and related-file ESLint.
+- Account page/menu no longer query or trigger intelligence checks.
+- Central page supports single-account IDs outside saved scope, dedicated result polling, neutral skipped results, and editable settings during confirmation waits.
+- One Vite production build passed with stable source hashes and refreshed embedded dist.
+- Existing warnings concern Node shell-args deprecation, Browserslist data, mixed imports, and chunk size.
+- pnpm 9 frozen-lockfile installation kept package and lockfile unchanged.
 
-Linux cross-build: CGO_ENABLED=0, -tags embed, -trimpath, stripped release build.
-Package verifies ELF64 architecture and generates SHA256 manifests.
-Patch export verifies exact-baseline application and resulting-tree equality in isolated indexes.
-Source Git metadata is independent; prior HEAD, index, status and diff were verified unchanged.
+Release build uses CGO_ENABLED=0, -tags embed, -trimpath and marker 0184257-intelligence-v2 for Linux amd64/arm64.
+Export/package scripts require exact-baseline patch application with tree equality, ELF64 architecture validation, TAR payload/permission validation, ZIP integrity with docs/legal, and SHA256 manifests; final artifacts are verified before publication.
+Installer checks passed this round:
+- Four shell scripts: sh -n and LF checks; build/export Python syntax; root git diff --check.
+- Six fake-Docker scenarios: previous-patch amd64 upgrade/status/logs/rollback/restart with old files preserved; official arm64 upgrade/status/logs/rollback/restart; wrong installed marker automatic restore; unknown marker rejection; current marker rejection; altered original configuration rollback rejection.
+- Executed on Windows Git Bash. The fixture emulated the ELF execute-bit predicate because NTFS/Git Bash cannot retain Unix ELF execute bits; all other installer checks ran unmodified. No Linux executable was launched.
 
-Unified installer fake-Docker smoke: 8/8 passed; final directory-name smoke: 1/1 passed.
-All four final shell scripts passed syntax and LF checks.
-Additional fake-Docker checks passed: old poll upgrade; status/logs/start; rollback; restart after rollback; altered old configuration rejection; unknown/current marker rejection; restore on wrong installed marker.
-No real Docker daemon was used.
-
-No real OAuth/upstream account, user proxy, PostgreSQL database or server was contacted.
-Production account permissions and runtime network behavior require installation-time verification.
+No real OAuth/upstream account, user proxy, PostgreSQL database, Docker daemon or user server has been contacted this round.

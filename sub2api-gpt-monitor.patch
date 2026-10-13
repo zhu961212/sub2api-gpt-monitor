@@ -3267,10 +3267,10 @@ index 0000000000000000000000000000000000000000..392f547f7b540c71e450edbc7d243eae
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_management.go b/backend/internal/service/gpt_account_monitor_management.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..99bee081fbf4880d92f1b5d8fd6ff57e9b25c2c9
+index 0000000000000000000000000000000000000000..601af8c3c64b767055b2f0158312e163fecff5d8
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_management.go
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,325 @@
 +package service
 +
 +import (
@@ -3461,7 +3461,8 @@ index 0000000000000000000000000000000000000000..99bee081fbf4880d92f1b5d8fd6ff57e
 +	if err != nil {
 +		return false, err
 +	}
-+	if account == nil || account.ID != accountID || validateGPTMonitorAccount(account) != nil {
++	exhausted, _ := gptMonitorExhaustedQuota(account, time.Now())
++	if account == nil || account.ID != accountID || (validateGPTMonitorAccount(account) != nil && !exhausted) {
 +		return false, infraerrors.BadRequest("GPT_MONITOR_ACCOUNT_INELIGIBLE", "请选择启用、未过期且绑定有效代理的独立 OpenAI OAuth 账号")
 +	}
 +	previous := gptMonitorSavedResult(account)
@@ -3497,7 +3498,7 @@ index 0000000000000000000000000000000000000000..99bee081fbf4880d92f1b5d8fd6ff57e
 +	if (row.ManualRequested || row.ManualRunning) && row.ConfigKey != configKey {
 +		row.ManualRequested, row.ManualRunning = false, false
 +		row.PendingVerdict, row.PendingCheckedAt, row.Consecutive = "", nil, 0
-+		row.Verdict, row.ErrorCode, row.Message = "error", "manual_config_changed", "巡检配置已变化，本次智商测试已取消，请重新测试"
++		row.Verdict, row.ErrorCode, row.Message = "error", "manual_config_changed", "检测配置已变化，本次智商检测已取消，请重新检测"
 +	} else if row.ManualRunning && row.NextCheckAt != nil && time.Now().After(*row.NextCheckAt) {
 +		// An attempt was consumed before its request. If the process stopped or
 +		// its final write failed, show an inconclusive outcome without replaying
@@ -4111,10 +4112,10 @@ index 0000000000000000000000000000000000000000..e23c74dee23f1345800e2f83179faa1e
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_probe.go b/backend/internal/service/gpt_account_monitor_probe.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..2804241007cc3ca2f478eabfa0751f8d56cc10ec
+index 0000000000000000000000000000000000000000..1467153e5dc3c1f80c13fd9f32beef97a98a9388
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_probe.go
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,200 @@
 +package service
 +
 +import (
@@ -4175,7 +4176,7 @@ index 0000000000000000000000000000000000000000..2804241007cc3ca2f478eabfa0751f8d
 +	defer cancel()
 +	account, token, err := s.resolveGPTMonitorIdentity(ctx, accountID)
 +	if err != nil {
-+		return nil, "", err
++		return account, "", err
 +	}
 +	answer, err := gptMonitorProbeWithDo(ctx, func(req *http.Request) (*http.Response, error) {
 +		return s.doGPTMonitorRequest(req, account)
@@ -4187,6 +4188,9 @@ index 0000000000000000000000000000000000000000..2804241007cc3ca2f478eabfa0751f8d
 +	account, err := s.accountRepo.GetByID(ctx, accountID)
 +	if err != nil {
 +		return nil, "", gptMonitorError("account_read_failed", "读取账号失败")
++	}
++	if exhausted, _ := gptMonitorExhaustedQuota(account, time.Now()); exhausted && account.ID == accountID {
++		return account, "", gptMonitorError("quota_exhausted", gptMonitorQuotaExhaustedMessage)
 +	}
 +	if err := validateGPTMonitorAccount(account); err != nil {
 +		return nil, "", err
@@ -4211,6 +4215,9 @@ index 0000000000000000000000000000000000000000..2804241007cc3ca2f478eabfa0751f8d
 +	account, err = s.accountRepo.GetByID(ctx, accountID)
 +	if err != nil {
 +		return nil, "", gptMonitorError("account_read_failed", "重新读取账号失败")
++	}
++	if exhausted, _ := gptMonitorExhaustedQuota(account, time.Now()); exhausted && account.ID == accountID {
++		return account, "", gptMonitorError("quota_exhausted", gptMonitorQuotaExhaustedMessage)
 +	}
 +	if err := validateGPTMonitorAccount(account); err != nil {
 +		return nil, "", err
@@ -4763,6 +4770,173 @@ index 0000000000000000000000000000000000000000..7c0e09074b46eee395d16a1bb00c0b94
 +				}
 +			} else if client.calls != 0 {
 +				t.Fatal("refresh called with unavailable or changed proxy")
++			}
++		})
++	}
++}
+diff --git a/backend/internal/service/gpt_account_monitor_quota.go b/backend/internal/service/gpt_account_monitor_quota.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..7321e681c91bf8a58c830448887e2151e8cef633
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_quota.go
+@@ -0,0 +1,35 @@
++package service
++
++import "time"
++
++const gptMonitorQuotaExhaustedMessage = "账号使用额度已达 100%，已跳过智商检测，调度未改变"
++
++// Use the same persisted Codex 5h/7d windows as the account usage display. A
++// relative reset must stay anchored to its snapshot, never to each new check.
++// Unknown usage does not trigger a quota fetch or prevent a normal probe.
++func gptMonitorExhaustedQuota(account *Account, now time.Time) (bool, *time.Time) {
++	if !gptMonitorEligible(account) || account.IsOpenAIAgentIdentity() {
++		return false, nil
++	}
++	var exhausted bool
++	var next *time.Time
++	for _, window := range []string{"5h", "7d"} {
++		// Match the scheduler's expiry/staleness rules so an old snapshot with
++		// no known reset cannot keep detection suspended indefinitely.
++		utilization, usable := resolveOpenAIQuotaUtilization(account.Extra, window, now)
++		if !usable || !(utilization >= 1) {
++			continue
++		}
++		reset, known := openAICodexWindowResetAt(account.Extra, window)
++		if known && !now.Before(reset) {
++			continue
++		}
++		exhausted = true
++		// Every exhausted window must reset before detection can resume.
++		if known && (next == nil || reset.After(*next)) {
++			reset = reset.UTC()
++			next = &reset
++		}
++	}
++	return exhausted, next
++}
+diff --git a/backend/internal/service/gpt_account_monitor_quota_test.go b/backend/internal/service/gpt_account_monitor_quota_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..73bbf8d276bacb645fbe67cf0c522877cd745164
+--- /dev/null
++++ b/backend/internal/service/gpt_account_monitor_quota_test.go
+@@ -0,0 +1,120 @@
++package service
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestGPTMonitorQuotaUsesEffectiveWindows(t *testing.T) {
++	now := time.Now().UTC()
++	for _, tc := range []struct {
++		name      string
++		extra     map[string]any
++		exhausted bool
++	}{
++		{"unknown", nil, false},
++		{"below full", map[string]any{"codex_5h_used_percent": 99.9}, false},
++		{"full short", map[string]any{"codex_5h_used_percent": 100}, true},
++		{"full week", map[string]any{"codex_7d_used_percent": "100"}, true},
++		{"reset passed", map[string]any{"codex_5h_used_percent": 100, "codex_5h_reset_at": now.Add(-time.Minute).Format(time.RFC3339)}, false},
++		{"relative reset passed", map[string]any{"codex_5h_used_percent": 100, "codex_usage_updated_at": now.Add(-time.Hour).Format(time.RFC3339), "codex_5h_reset_after_seconds": 60}, false},
++		{"stale without reset", map[string]any{"codex_5h_used_percent": 100, "codex_usage_updated_at": now.Add(-24 * time.Hour).Format(time.RFC3339)}, false},
++		{"stale with future reset", map[string]any{"codex_7d_used_percent": 100, "codex_usage_updated_at": now.Add(-24 * time.Hour).Format(time.RFC3339), "codex_7d_reset_at": now.Add(time.Hour).Format(time.RFC3339)}, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			a := gptMonitorTestAccount()
++			a.Extra = tc.extra
++			full, _ := gptMonitorExhaustedQuota(a, now)
++			require.Equal(t, tc.exhausted, full)
++		})
++	}
++	a := gptMonitorTestAccount()
++	weekReset := now.Add(48 * time.Hour).Truncate(time.Second)
++	a.Extra = map[string]any{"codex_5h_used_percent": 100, "codex_5h_reset_at": now.Add(time.Hour).Format(time.RFC3339), "codex_7d_used_percent": 100, "codex_7d_reset_at": weekReset.Format(time.RFC3339)}
++	full, next := gptMonitorExhaustedQuota(a, now)
++	require.True(t, full)
++	require.Equal(t, weekReset, *next)
++}
++
++func TestGPTMonitorQuotaBlocksBeforeTokenAndAfterReread(t *testing.T) {
++	for _, afterToken := range []bool{false, true} {
++		t.Run(map[bool]string{false: "before token including missing proxy", true: "after token reread"}[afterToken], func(t *testing.T) {
++			a := gptMonitorTestAccount()
++			cache := &gptMonitorProbeCache{token: a.GetOpenAIAccessToken()}
++			reads := 0
++			repo := &gptMonitorProbeRepo{get: func(context.Context, int64) (*Account, error) {
++				reads++
++				if !afterToken || reads > 1 {
++					a.Extra = map[string]any{"codex_5h_used_percent": 100}
++					if !afterToken {
++						a.Proxy = nil
++						a.ProxyID = nil
++					}
++				}
++				return a, nil
++			}}
++			gateway := &OpenAIGatewayService{accountRepo: repo, openAITokenProvider: &OpenAITokenProvider{accountRepo: repo, tokenCache: cache}}
++			// No HTTP transport exists: any attempted upstream request would fail.
++			snapshot, answer, err := gateway.ProbeGPTAccount(context.Background(), a.ID, "gpt-6-astra", "test question")
++			code, _, _ := gptMonitorErrorDetails(err)
++			require.Equal(t, "quota_exhausted", code)
++			require.Equal(t, a.ID, snapshot.ID)
++			require.Empty(t, answer)
++			if afterToken {
++				require.Equal(t, 1, cache.calls)
++			} else {
++				require.Zero(t, cache.calls)
++			}
++			require.True(t, a.Schedulable)
++		})
++	}
++}
++
++func TestGPTMonitorQuotaSkipKeepsScheduleAndEndsSingleTasks(t *testing.T) {
++	for _, mode := range []string{"automatic", "bulk", "single", "followup"} {
++		t.Run(mode, func(t *testing.T) {
++			s, repo, _ := gptMonitorFixture()
++			a := gptMonitorTestAccount()
++			checked, due := time.Now().UTC().Add(-6*time.Minute), time.Now().UTC().Add(-time.Second)
++			previous := GPTAccountMonitorResult{ConfigKey: gptMonitorConfigHash(s.cfg), PendingVerdict: "abnormal", Consecutive: 1, PendingCheckedAt: &checked, NextCheckAt: &due}
++			if mode == "followup" {
++				previous.ManualRequested = true
++				previous.ManualAttempts = 1
++			}
++			a.Extra = map[string]any{"codex_5h_used_percent": 100, "gpt_account_monitor": previous}
++			repo.accounts = []Account{*a}
++			s.probe = func(context.Context, int64, string, string) (*Account, string, error) {
++				t.Fatal("full account was probed")
++				return nil, "", nil
++			}
++			var single []gptMonitorRequest
++			if mode == "single" || mode == "followup" {
++				single = []gptMonitorRequest{{AccountID: a.ID, Confirmation: mode == "followup"}}
++			}
++			s.checkOne(context.Background(), "owner", a, s.cfg, mode == "automatic", single...)
++			result := repo.results[a.ID]
++			require.Equal(t, "skipped", result.Verdict)
++			require.Equal(t, "quota_exhausted", result.ErrorCode)
++			require.True(t, result.Schedulable)
++			require.False(t, result.Changed)
++			require.Empty(t, repo.writes)
++			if mode != "bulk" {
++				require.Empty(t, result.PendingVerdict)
++				require.False(t, result.ManualRequested)
++				require.False(t, result.ManualRunning)
++				require.NotNil(t, result.NextCheckAt)
++			} else {
++				require.Equal(t, previous.NextCheckAt, result.NextCheckAt)
++			}
++			if mode == "single" {
++				require.Equal(t, 1, result.ManualAttempts)
++			}
++			if mode == "followup" {
++				require.Equal(t, 2, result.ManualAttempts)
 +			}
 +		})
 +	}
@@ -5525,10 +5699,10 @@ index 0000000000000000000000000000000000000000..5aa038dc53bd8b0d2590581720aded69
 +}
 diff --git a/backend/internal/service/gpt_account_monitor_service.go b/backend/internal/service/gpt_account_monitor_service.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..ef8be69a769681fb13b3221d3f187c0bf9dec9da
+index 0000000000000000000000000000000000000000..1a0609aecaeddf40b3ab2a87ae5bfc34e3067e1a
 --- /dev/null
 +++ b/backend/internal/service/gpt_account_monitor_service.go
-@@ -0,0 +1,769 @@
+@@ -0,0 +1,785 @@
 +package service
 +
 +import (
@@ -6089,6 +6263,9 @@ index 0000000000000000000000000000000000000000..ef8be69a769681fb13b3221d3f187c0b
 +			r.ManualAttempts = 2
 +		}
 +	}
++	if followup && (!previous.ManualRequested || previous.ConfigKey != r.ConfigKey || previous.ManualAttempts != 1) {
++		return nil
++	}
 +	// Automatic checks and explicit single-account requests form independent
 +	// confirmation pairs. A read-only bulk test preserves the existing plan.
 +	finish := func() {
@@ -6111,12 +6288,21 @@ index 0000000000000000000000000000000000000000..ef8be69a769681fb13b3221d3f187c0b
 +		next = r.NextCheckAt
 +		s.saveResult(parent, listed.ID, r)
 +	}
-+	if followup {
-+		if !previous.ManualRequested || previous.ConfigKey != r.ConfigKey || previous.ManualAttempts != 1 {
-+			return nil
++	skipExhaustedQuota := func(account *Account) {
++		r.Verdict, r.ErrorCode, r.Message = "skipped", "quota_exhausted", gptMonitorQuotaExhaustedMessage
++		if account != nil && account.ID == listed.ID {
++			r.Schedulable = account.Schedulable
++			_, r.NextCheckAt = gptMonitorExhaustedQuota(account, time.Now().UTC())
 +		}
++		finish()
++	}
++	if exhausted, _ := gptMonitorExhaustedQuota(listed, time.Now().UTC()); exhausted {
++		skipExhaustedQuota(listed)
++		return next
++	}
++	if followup {
 +		if previous.PendingCheckedAt == nil || time.Since(*previous.PendingCheckedAt) > 10*time.Minute {
-+			r.ErrorCode, r.Message = "confirmation_expired", "复测确认窗口已过期，请重新发起智商测试，调度未改变"
++			r.ErrorCode, r.Message = "confirmation_expired", "复测确认窗口已过期，请重新发起智商检测，调度未改变"
 +			r, _ = gptMonitorConfirmResult(r, GPTAccountMonitorResult{}, r.ConfigKey, time.Now().UTC())
 +			finish()
 +			return next
@@ -6152,6 +6338,10 @@ index 0000000000000000000000000000000000000000..ef8be69a769681fb13b3221d3f187c0b
 +		previous = GPTAccountMonitorResult{}
 +	}
 +	if err != nil {
++		if code, _, _ := gptMonitorErrorDetails(err); code == "quota_exhausted" {
++			skipExhaustedQuota(snapshot)
++			return next
++		}
 +		_, _, receivedStatus := gptMonitorErrorDetails(err)
 +		if probeContextErr != nil && receivedStatus == 0 {
 +			err = gptMonitorTransportError(probeContextErr)
@@ -7583,43 +7773,9 @@ index 0616449f1b776f06389ab2ed113d368781a41b68..e7a353754cf8b4a12b8a76252765f155
  }
  
  export default adminAPI
-diff --git a/frontend/src/components/admin/account/AccountActionMenu.vue b/frontend/src/components/admin/account/AccountActionMenu.vue
-index 0523dcad028b48910d8fbdcbef328cd129cd5fc5..cb370a4f584117f2b8516be9f5a830645c5ab1fe 100644
---- a/frontend/src/components/admin/account/AccountActionMenu.vue
-+++ b/frontend/src/components/admin/account/AccountActionMenu.vue
-@@ -15,6 +15,10 @@
-               <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
-               {{ t('admin.accounts.testConnection') }}
-             </button>
-+            <button v-if="canRunGPTMonitor" type="button" data-testid="gpt-monitor-test" :disabled="gptMonitorBusy" :title="t('admin.gptAccountMonitor.accountRunHint')" @click="$emit('gpt-monitor-test', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-dark-700">
-+              <Icon name="checkCircle" size="sm" class="text-primary-500" />
-+              {{ t('admin.gptAccountMonitor.accountAction') }}
-+            </button>
-             <button @click="$emit('stats', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
-               <Icon name="chart" size="sm" class="text-indigo-500" />
-               {{ t('admin.accounts.viewStats') }}
-@@ -69,8 +73,8 @@ import { useI18n } from 'vue-i18n'
- import { Icon } from '@/components/icons'
- import type { Account } from '@/types'
- 
--const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
--const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
-+const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null; gptMonitorBusy?: boolean }>()
-+const emit = defineEmits(['close', 'test', 'gpt-monitor-test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
- const { t } = useI18n()
- const menuRef = ref<HTMLElement | null>(null)
- const { width: viewportWidth, height: viewportHeight } = useWindowSize()
-@@ -133,6 +137,7 @@ const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && pro
- const isShadow = computed(() => props.account?.parent_account_id != null)
- // A "parent" OpenAI OAuth account is one that is NOT itself a shadow (parent_account_id == null)
- const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
-+const canRunGPTMonitor = computed(() => isOpenAIOAuthParent.value && props.account?.status === 'active' && (!props.account.expires_at || props.account.expires_at * 1000 > Date.now()))
- const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
- const hasQuotaLimit = computed(() => {
-   return (props.account?.type === 'apikey' || props.account?.type === 'bedrock') && (
 diff --git a/frontend/src/components/admin/account/GPTAccountTestResultDialog.vue b/frontend/src/components/admin/account/GPTAccountTestResultDialog.vue
 new file mode 100644
-index 0000000000000000000000000000000000000000..333fd5498bf218458008e4374025264a87f6fee7
+index 0000000000000000000000000000000000000000..e4fbb5daac8a3c7d5375bfb8986211fe5029a3b0
 --- /dev/null
 +++ b/frontend/src/components/admin/account/GPTAccountTestResultDialog.vue
 @@ -0,0 +1,41 @@
@@ -7659,50 +7815,35 @@ index 0000000000000000000000000000000000000000..333fd5498bf218458008e4374025264a
 +const props = defineProps<{ show: boolean; accountId: number | null; result: GPTAccountMonitorResult | null; queryError: string; queryPaused: boolean }>()
 +const emit = defineEmits(['close', 'resume', 'stop'])
 +const { t } = useI18n()
-+const verdict = computed(() => props.result?.verdict === 'normal' || props.result?.verdict === 'pass' ? 'normal' : props.result?.verdict === 'abnormal' || props.result?.verdict === 'fail' ? 'abnormal' : 'error')
++const verdict = computed(() => props.result?.verdict === 'skipped' ? 'skipped' : props.result?.verdict === 'pending' ? 'pending' : props.result?.verdict === 'normal' || props.result?.verdict === 'pass' ? 'normal' : props.result?.verdict === 'abnormal' || props.result?.verdict === 'fail' ? 'abnormal' : 'error')
 +const pendingVerdict = computed(() => props.result?.pending_verdict === 'normal' || props.result?.pending_verdict === 'pass' ? 'normal' : 'abnormal')
 +const confirmationPending = computed(() => props.result?.manual_requested || props.result?.manual_running)
 +const checkedAt = computed(() => props.result?.checked_at ? new Date(props.result.checked_at).toLocaleString() : '—')
 +</script>
 diff --git a/frontend/src/components/admin/account/__tests__/AccountActionMenu.spark_shadow.spec.ts b/frontend/src/components/admin/account/__tests__/AccountActionMenu.spark_shadow.spec.ts
-index f28c23e32624eb14bfdc9a68805494b779ea3073..1a1b436654aaa96709d51e197ec901c88633b517 100644
+index f28c23e32624eb14bfdc9a68805494b779ea3073..37571665cd204960bb39916f1d0835835c9cb73e 100644
 --- a/frontend/src/components/admin/account/__tests__/AccountActionMenu.spark_shadow.spec.ts
 +++ b/frontend/src/components/admin/account/__tests__/AccountActionMenu.spark_shadow.spec.ts
-@@ -49,6 +49,40 @@ const getBodyText = () => document.body.textContent ?? ''
+@@ -49,6 +49,25 @@ const getBodyText = () => document.body.textContent ?? ''
  const getBodyButtons = () => Array.from(document.body.querySelectorAll('button'))
  
  describe('AccountActionMenu — spark shadow 按钮可见性', () => {
 +  it.each([
-+    { platform: 'anthropic' }, { type: 'apikey' }, { parent_account_id: 42 }, { status: 'disabled' }, { expires_at: 1 },
-+  ] as Partial<Account>[])('不对无效 GPT 巡检账号显示单号入口：%j', (overrides) => {
++    {}, { platform: 'anthropic' }, { type: 'apikey' }, { parent_account_id: 42 }, { status: 'disabled' }, { expires_at: 1 },
++  ] as Partial<Account>[])('账号菜单不显示智商检测入口，保留连接测试：%j', (overrides) => {
 +    const wrapper = mount(AccountActionMenu, { props: { show: true, account: makeAccount(overrides), anchorRect }, attachTo: document.body })
 +    expect(document.body.querySelector('[data-testid=gpt-monitor-test]')).toBeNull()
 +    expect(getBodyText()).toContain('admin.accounts.testConnection')
 +    wrapper.unmount()
 +  })
 +
-+  it('单号 GPT 巡检与既有连接测试各自触发独立事件', async () => {
++  it('既有连接测试仍触发账号测试事件', async () => {
 +    const account = makeAccount({ schedulable: false })
 +    const wrapper = mount(AccountActionMenu, { props: { show: true, account, anchorRect }, attachTo: document.body })
-+    const gptButton = document.body.querySelector<HTMLButtonElement>('[data-testid=gpt-monitor-test]')!
-+    expect(gptButton).not.toBeNull()
-+    gptButton.click()
-+    await wrapper.vm.$nextTick()
-+    expect(wrapper.emitted('gpt-monitor-test')?.[0][0]).toMatchObject({ id: account.id })
-+    expect(wrapper.emitted('test')).toBeUndefined()
 +    const connectionButton = getBodyButtons().find(button => button.textContent?.includes('admin.accounts.testConnection'))!
 +    connectionButton.click()
 +    await wrapper.vm.$nextTick()
 +    expect(wrapper.emitted('test')?.[0][0]).toMatchObject({ id: account.id })
-+    wrapper.unmount()
-+  })
-+
-+  it('排队或正在检测时禁用 GPT 巡检入口', () => {
-+    const wrapper = mount(AccountActionMenu, { props: { show: true, account: makeAccount({}), anchorRect, gptMonitorBusy: true }, attachTo: document.body })
-+    const gptButton = document.body.querySelector<HTMLButtonElement>('[data-testid=gpt-monitor-test]')!
-+    expect(gptButton.disabled).toBe(true)
-+    gptButton.click()
-+    expect(wrapper.emitted('gpt-monitor-test')).toBeUndefined()
 +    wrapper.unmount()
 +  })
 +
@@ -7711,10 +7852,10 @@ index f28c23e32624eb14bfdc9a68805494b779ea3073..1a1b436654aaa96709d51e197ec901c8
      const wrapper = mount(AccountActionMenu, {
 diff --git a/frontend/src/components/admin/account/__tests__/GPTAccountTestResultDialog.spec.ts b/frontend/src/components/admin/account/__tests__/GPTAccountTestResultDialog.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6d6cd5e485805f4c25dd0013d24ab809a3e17a81
+index 0000000000000000000000000000000000000000..96fe39c65d0bd477e2821c14e1c497f91cb49fb4
 --- /dev/null
 +++ b/frontend/src/components/admin/account/__tests__/GPTAccountTestResultDialog.spec.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,71 @@
 +import { enableAutoUnmount, mount } from '@vue/test-utils'
 +import { afterEach, describe, expect, it, vi } from 'vitest'
 +import GPTAccountTestResultDialog from '../GPTAccountTestResultDialog.vue'
@@ -7726,6 +7867,14 @@ index 0000000000000000000000000000000000000000..6d6cd5e485805f4c25dd0013d24ab809
 +}
 +
 +describe('individual GPT account results', () => {
++  it('shows an exhausted account as skipped with its scheduling unchanged', () => {
++    const wrapper = mountDialog({ result: { account_id: 42, checked_at: '2026-10-13T06:05:00Z', verdict: 'skipped', answer: '', message: '账号使用额度为 100%，已跳过检测', model: 'gpt-6-astra', expected_generation: 17, schedulable: true, changed: false, manual_requested: false, manual_running: false } })
++    expect(wrapper.text()).toContain('admin.gptAccountMonitor.skipped')
++    expect(wrapper.text()).not.toContain('admin.gptAccountMonitor.error')
++    expect(wrapper.get('[data-testid=single-scheduling]').text()).toContain('admin.gptAccountMonitor.unchanged')
++    expect(wrapper.find('[role=status]').exists()).toBe(false)
++  })
++
 +  it('renders untrusted answers and messages as text', () => {
 +    const answer = '<img src=x onerror=alert(1)>'
 +    const wrapper = mountDialog({ result: { account_id: 42, checked_at: '2026-10-13T06:05:00Z', verdict: 'normal', answer, message: '<script>alert(1)</script>', model: 'gpt-6-astra', reasoning_effort: 'xhigh', expected_generation: 17, schedulable: true, changed: false } })
@@ -8050,10 +8199,10 @@ index 0000000000000000000000000000000000000000..bc800e7b5f14b5716f981837b7b2cae6
 +})
 diff --git a/frontend/src/composables/useGPTAccountMonitorTest.ts b/frontend/src/composables/useGPTAccountMonitorTest.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d86989966039eb748cb3c3f490640c4b92decc9f
+index 0000000000000000000000000000000000000000..bd425ee76dabac001bf94f9c711aa5444877d277
 --- /dev/null
 +++ b/frontend/src/composables/useGPTAccountMonitorTest.ts
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,121 @@
 +import { computed, onUnmounted, ref } from 'vue'
 +import { useI18n } from 'vue-i18n'
 +import { adminAPI } from '@/api/admin'
@@ -8154,6 +8303,7 @@ index 0000000000000000000000000000000000000000..d86989966039eb748cb3c3f490640c4b
 +        appStore.showSuccess(t('admin.gptAccountMonitor.accountQueued', { id: targetAccountID }))
 +        pollTimer = setTimeout(() => { void queryResult() }, 5000)
 +      } else appStore.showInfo(accepted.message || t('admin.gptAccountMonitor.queueBusy'))
++      return accepted
 +    } catch (error) {
 +      if (!stopped && !isStepUpCancelled(error)) {
 +        appStore.showError(isStepUpBlocked(error) ? t(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? 'stepUp.adminApiKeyForbidden' : 'stepUp.notEnabled') : errorMessage(error))
@@ -8176,24 +8326,24 @@ index 0000000000000000000000000000000000000000..d86989966039eb748cb3c3f490640c4b
 +}
 diff --git a/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..78af6acbd4a40c7a825d62efcc08a13d571e023f
+index 0000000000000000000000000000000000000000..2bbc6715d50c13589bc5e9b9cf013cb04dbe987c
 --- /dev/null
 +++ b/frontend/src/i18n/locales/en/admin/gptAccountMonitor.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,43 @@
 +export default {
 +  gptAccountMonitor: {
-+    title: 'GPT Account Monitor',
++    title: 'Intelligence Check',
 +    description: 'Poll accounts individually with a 5-second gap, and manage scheduling after two consecutive confirmations. Individual diagnostics are also available.',
 +    oauthOnly: 'OpenAI OAuth only',
-+    proxyRule: 'Each account is checked through its assigned proxy. API Key accounts are excluded.',
-+    ruleNotice: 'Automatic checks require two consecutive valid, matching verdicts before changing scheduling: matching iPhone generations enable it and nonmatching answers disable it. Pending verdicts are rechecked after about 5 minutes. Ambiguous answers and proxy, authentication, network, or response errors leave scheduling unchanged. Individual IQ tests also recheck when needed and change that account’s scheduling after confirmation; manual bulk tests only show results.',
++    proxyRule: 'Each account is checked through its assigned proxy. API Key accounts are excluded. Accounts at 100% usage are skipped without changing scheduling.',
++    ruleNotice: 'Automatic checks require two consecutive valid, matching verdicts before changing scheduling: matching iPhone generations enable it and nonmatching answers disable it. Pending verdicts are rechecked after about 5 minutes. Ambiguous answers and proxy, authentication, network, or response errors leave scheduling unchanged. Individual intelligence checks also recheck when needed and change that account’s scheduling after confirmation; manual bulk checks only show results.',
 +    ruleLimit: 'This checks a fixed response rule, not intelligence. The expected generation does not update automatically, and checks provide no web tools.',
 +    running: 'Checking', queueState: 'Queued', enabled: 'Enabled', disabled: 'Paused',
 +    lastRun: 'Last check', nextRun: 'Next check', noTime: 'Not scheduled',
 +    normal: 'Matching', abnormal: 'Not matching', error: 'Check errors', skipped: 'Skipped', pending: 'Not checked yet',
-+    normalHint: 'Answers match the saved rule', abnormalHint: 'Answers do not match the saved rule', errorHint: 'Scheduling stays unchanged',
++    normalHint: 'Answers match the saved rule', abnormalHint: 'Answers do not match the saved rule', errorHint: 'Scheduling stays unchanged', skippedHint: 'Skipped for exhausted usage or other reasons; scheduling stays unchanged',
 +    currentRecords: 'Latest results currently shown',
-+    configTitle: 'Monitor settings', configHint: 'Changes apply when saved. Run now uses the saved configuration.',
++    configTitle: 'Check settings', configHint: 'Changes apply when saved. Run now uses the saved configuration.',
 +    enableSchedule: 'Enable scheduled checks', enableHint: 'Allow checks to enable or disable scheduling for selected accounts.',
 +    interval: 'Check interval (seconds)', timeout: 'Account timeout (seconds)', concurrency: 'Concurrent accounts', generation: 'Expected iPhone generation',
 +    checkMode: 'Check mode', serialMode: 'One account at a time', accountInterval: '5 seconds between accounts; automatic polling follows each account’s due time',
@@ -8203,13 +8353,12 @@ index 0000000000000000000000000000000000000000..78af6acbd4a40c7a825d62efcc08a13d
 +    accountSearch: 'Search account name or ID', selectedCount: '{count} selected', noAccounts: 'No eligible accounts found',
 +    noProxy: 'No assigned proxy', noProxyHint: 'Accounts without a proxy are skipped.', previous: 'Previous', next: 'Next', page: 'Page {page} of {pages}',
 +    removeAccount: 'Remove account {id}', accountLoadError: 'Could not load accounts. Saved selections are retained; try again.', retry: 'Retry',
-+    save: 'Save settings', saving: 'Saving…', saved: 'Monitor settings saved', reset: 'Discard changes', dirty: 'Unsaved changes',
++    save: 'Save settings', saving: 'Saving…', saved: 'Check settings saved', reset: 'Discard changes', dirty: 'Unsaved changes',
 +    run: 'Test all sequentially', runHint: 'Test accounts in the saved scope one at a time, 5 seconds apart. Manual tests only show results and do not change scheduling or count toward automatic confirmation.', queued: 'Sequential test queued. Results will refresh automatically.',
-+    runAccount: 'IQ test', testingAccount: 'Submitting…', accountAction: 'IQ test', actions: 'Actions',
-+    accountTest: 'IQ test',
++    runAccount: 'Intelligence Check', testingAccount: 'Submitting…', actions: 'Actions', accountID: 'Account ID',
 +    accountRunHint: 'Check this account. When a scheduling change is needed, recheck after about 5 minutes and disable or restore scheduling after two matching valid verdicts. Errors leave scheduling unchanged. Available while scheduled checks are paused.',
-+    accountQueued: 'IQ test queued for account #{id}. Results and scheduling will refresh automatically.', queueBusy: 'A check is already queued or running. Wait for it to finish.',
-+    singleResultTitle: 'IQ test for account #{id}', singleResultHint: 'Check this account. When a scheduling change is needed, automatically recheck after about 5 minutes and disable or restore scheduling after two matching valid verdicts. Errors leave scheduling unchanged.', manualRecheck: 'An automatic recheck will follow', manualChecking: 'Check {count}/2 in progress',
++    accountQueued: 'Intelligence check queued for account #{id}. Results and scheduling will refresh automatically.', queueBusy: 'A check is already queued or running. Wait for it to finish.',
++    singleResultTitle: 'Intelligence Check for account #{id}', singleResultHint: 'Check this account. When a scheduling change is needed, automatically recheck after about 5 minutes and disable or restore scheduling after two matching valid verdicts. Errors or exhausted usage leave scheduling unchanged.', manualRecheck: 'An automatic recheck will follow', manualChecking: 'Check {count}/2 in progress',
 +    waitingForResult: 'Waiting for this test’s result. Checking every 5 seconds…', resultUnconfirmed: 'This result is not confirmed yet. Continue querying without submitting another test.', resumeQuery: 'Continue querying',
 +    stopQuery: 'Stop querying', stopQueryHint: 'Stop this page’s result queries without canceling the server test. You can then submit another account test.',
 +    saveFirst: 'Save your changes before running a check.', enableFirst: 'Enable scheduled checks and save first.',
@@ -8219,8 +8368,8 @@ index 0000000000000000000000000000000000000000..78af6acbd4a40c7a825d62efcc08a13d
 +    account: 'Account / proxy', checkedAt: 'Checked at', verdict: 'Result', scheduling: 'Scheduling', response: 'Answer / message',
 +    scheduleOn: 'Enabled', scheduleOff: 'Disabled', changed: 'Changed this check', unchanged: 'Unchanged',
 +    confirmationProgress: 'Awaiting confirmation: {verdict} ({count}/2)', nextCheck: 'Recheck at',
-+    noResults: 'No check results yet', noResultsHint: 'Save and enable the monitor, then wait for a scheduled check or select Run now.', noMatches: 'No matching results',
-+    statusError: 'Could not refresh status. Displayed results may be outdated.', loading: 'Loading monitor settings…', loadError: 'Could not load monitor settings',
++    noResults: 'No check results yet', noResultsHint: 'Save and enable scheduled checks, then wait for a scheduled check or select Run now.', noMatches: 'No matching results',
++    statusError: 'Could not refresh status. Displayed results may be outdated.', loading: 'Loading check settings…', loadError: 'Could not load check settings',
 +    localTime: 'Times use your browser’s time zone. Status refreshes every 5 seconds while this page is visible.',
 +  }
 +}
@@ -8243,64 +8392,63 @@ index b86114e058b56e4c26d2c278d4decc607f2129c5..bc05f7d2949fd5e112e3a0436202e9a5
 +  ...gptAccountMonitor,
  }
 diff --git a/frontend/src/i18n/locales/en/common.ts b/frontend/src/i18n/locales/en/common.ts
-index 694dbb74ff3a2d35e613282dd05968b2a346e043..5f64f2564b0d60b1b19bda53ed48104ea2978a54 100644
+index 694dbb74ff3a2d35e613282dd05968b2a346e043..6a164fb8e042cfbb0e3d2b715e3cecc40560a44f 100644
 --- a/frontend/src/i18n/locales/en/common.ts
 +++ b/frontend/src/i18n/locales/en/common.ts
 @@ -183,6 +183,7 @@ export default {
      subscriptions: 'Subscriptions',
      accounts: 'Accounts',
      plugins: 'Plugins',
-+    gptAccountMonitor: 'GPT Account Monitor',
++    gptAccountMonitor: 'Intelligence Check',
      proxies: 'Proxies',
      redeemCodes: 'Redeem Codes',
      ops: 'Ops',
 diff --git a/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe479863ba6a25f18b5aa1f62711f63e09c64cb3
+index 0000000000000000000000000000000000000000..052773e1a22f0c140014caf18927c45743114159
 --- /dev/null
 +++ b/frontend/src/i18n/locales/zh/admin/gptAccountMonitor.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,43 @@
 +export default {
 +  gptAccountMonitor: {
-+    title: 'GPT 账号巡检',
++    title: '智商检测',
 +    description: '按账号定时轮询，逐个检测且间隔 5 秒；连续两次确认后管理调度，支持单号诊断。',
 +    oauthOnly: '仅 OpenAI OAuth',
-+    proxyRule: '每个账号通过自己绑定的代理检测，API Key 类型账号不处理。',
-+    ruleNotice: '自动巡检需连续两次有效回答判定一致才调整调度：符合期望 iPhone 代数时开启，不符合时关闭，待确认结果约 5 分钟后复测。含糊回答、代理、认证、网络或响应异常时保留原调度状态。单账号智商测试也会在需要时自动复测，确认后调整该账号调度；批量手动测试只展示结果。',
++    proxyRule: '每个账号通过自己绑定的代理检测，API Key 类型账号不处理；使用额度达到 100% 的账号自动跳过，调度保持不变。',
++    ruleNotice: '自动检测需连续两次有效回答判定一致才调整调度：符合期望 iPhone 代数时开启，不符合时关闭，待确认结果约 5 分钟后复测。含糊回答、代理、认证、网络或响应异常时保留原调度状态。单账号智商检测也会在需要时自动复测，确认后调整该账号调度；批量手动检测只展示结果。',
 +    ruleLimit: '这是固定回答规则，不是智力评分；期望代数不会自动更新，检测不提供联网工具。',
-+    running: '巡检中', queueState: '已排队', enabled: '已启用', disabled: '已暂停',
-+    lastRun: '上次巡检', nextRun: '下次巡检', noTime: '尚未安排',
++    running: '检测中', queueState: '已排队', enabled: '已启用', disabled: '已暂停',
++    lastRun: '上次检测', nextRun: '下次检测', noTime: '尚未安排',
 +    normal: '符合预期', abnormal: '不符合预期', error: '检查异常', skipped: '已跳过', pending: '尚未检查',
-+    normalHint: '回答符合已保存的规则', abnormalHint: '回答未达到已保存的规则', errorHint: '调度保持不变',
++    normalHint: '回答符合已保存的规则', abnormalHint: '回答未达到已保存的规则', errorHint: '调度保持不变', skippedHint: '额度用尽等跳过原因，调度保持不变',
 +    currentRecords: '当前展示的最新结果',
-+    configTitle: '巡检设置', configHint: '保存后立即生效；立即巡检使用已保存配置。',
-+    enableSchedule: '启用定时巡检', enableHint: '允许巡检自动开启或关闭所选账号的调度。',
-+    interval: '巡检间隔（秒）', timeout: '单账号超时（秒）', concurrency: '并发账号数', generation: '期望 iPhone 代数',
++    configTitle: '检测设置', configHint: '保存后立即生效；立即检测使用已保存配置。',
++    enableSchedule: '启用定时检测', enableHint: '允许检测自动开启或关闭所选账号的调度。',
++    interval: '检测间隔（秒）', timeout: '单账号超时（秒）', concurrency: '并发账号数', generation: '期望 iPhone 代数',
 +    checkMode: '检测方式', serialMode: '逐账号检测', accountInterval: '账号间隔 5 秒，自动按各账号到期时间轮询',
-+    model: '检测模型', reasoningEffort: '推理强度', fixedModelHint: '每次巡检固定使用 gpt-6-astra 和 XHigh。', prompt: '检测问题', runOnStart: '服务启动后立即检查',
-+    scope: '巡检账号', allAccounts: '全部符合条件的 OAuth 账号', selectedAccounts: '只检查指定账号',
++    model: '检测模型', reasoningEffort: '推理强度', fixedModelHint: '每次检测固定使用 gpt-6-astra 和 XHigh。', prompt: '检测问题', runOnStart: '服务启动后立即检查',
++    scope: '检测账号', allAccounts: '全部符合条件的 OAuth 账号', selectedAccounts: '只检查指定账号',
 +    scopeHint: '仅列出正常的 OpenAI OAuth 账号；影子账号、过期账号和 API Key 账号不能加入。',
 +    accountSearch: '搜索账号名称或 ID', selectedCount: '已选择 {count} 个', noAccounts: '没有符合条件的账号',
 +    noProxy: '未绑定代理', noProxyHint: '缺少代理的账号会跳过检测。', previous: '上一页', next: '下一页', page: '第 {page} / {pages} 页',
 +    removeAccount: '移除账号 {id}', accountLoadError: '账号列表加载失败，可重试；已保存的选择仍保留。', retry: '重试',
-+    save: '保存设置', saving: '正在保存…', saved: '巡检设置已保存', reset: '还原修改', dirty: '有未保存的修改',
-+    run: '顺序测试全部', runHint: '按已保存范围逐个测试账号，间隔 5 秒；只查看结果，不调整调度或累计自动确认。', queued: '已提交逐账号测试，结果将自动刷新',
-+    runAccount: '智商测试', testingAccount: '正在提交…', accountAction: '智商测试', actions: '操作',
-+    accountTest: '智商测试',
-+    accountRunHint: '检测该账号；需调整调度时约 5 分钟后复测，两次有效判定一致后关闭或恢复调度。失败不改变调度，定时巡检暂停时也可运行。',
-+    accountQueued: '账号 #{id} 的智商测试已提交，结果及调度状态将自动刷新。', queueBusy: '已有巡检任务，请等待完成后再测试。',
-+    singleResultTitle: '账号 #{id} 的智商测试', singleResultHint: '检测该账号；需调整调度时约 5 分钟后自动复测，两次有效判定一致后关闭或恢复调度。检测失败不改变原调度。', manualRecheck: '将自动复测', manualChecking: '第 {count}/2 次检测中',
++    save: '保存设置', saving: '正在保存…', saved: '检测设置已保存', reset: '还原修改', dirty: '有未保存的修改',
++    run: '顺序检测全部', runHint: '按已保存范围逐个检测账号，间隔 5 秒；只查看结果，不调整调度或累计自动确认。', queued: '已提交逐账号检测，结果将自动刷新',
++    runAccount: '智商检测', testingAccount: '正在提交…', actions: '操作', accountID: '账号 ID',
++    accountRunHint: '检测该账号；需调整调度时约 5 分钟后复测，两次有效判定一致后关闭或恢复调度。失败不改变调度，定时检测暂停时也可运行。',
++    accountQueued: '账号 #{id} 的智商检测已提交，结果及调度状态将自动刷新。', queueBusy: '已有检测任务，请等待完成后再检测。',
++    singleResultTitle: '账号 #{id} 的智商检测', singleResultHint: '检测该账号；需调整调度时约 5 分钟后自动复测，两次有效判定一致后关闭或恢复调度。检测失败或额度用尽时跳过，不改变原调度。', manualRecheck: '将自动复测', manualChecking: '第 {count}/2 次检测中',
 +    waitingForResult: '正在等待本次检测结果，每 5 秒查询一次…', resultUnconfirmed: '本次结果尚未确认，可继续查询；不会重新提交测试。', resumeQuery: '继续查询',
 +    stopQuery: '停止查询', stopQueryHint: '只停止本页结果查询，不取消服务器上的检测；之后可提交其他账号测试。',
-+    saveFirst: '请先保存修改，再立即巡检。', enableFirst: '请先启用定时巡检并保存。',
++    saveFirst: '请先保存修改，再立即检测。', enableFirst: '请先启用定时检测并保存。',
 +    chooseAccounts: '请至少选择一个 OAuth 账号，或切换为全部账号。', invalidConfig: '请检查参数范围，并填写检测问题。',
 +    records: '账号检测结果', recordCount: '展示 {shown} / {total} 条，最多保留 200 条最新结果',
 +    searchResults: '搜索账号、ID、回答或说明', allResults: '全部结果', refresh: '刷新状态',
 +    account: '账号 / 代理', checkedAt: '检查时间', verdict: '结果', scheduling: '调度', response: '回答 / 说明',
 +    scheduleOn: '开启', scheduleOff: '关闭', changed: '本次已调整', unchanged: '未调整',
 +    confirmationProgress: '待确认：{verdict}（{count}/2）', nextCheck: '复测时间',
-+    noResults: '暂无检测结果', noResultsHint: '保存设置并启用后，等待定时巡检或点击立即巡检。', noMatches: '没有匹配的检测结果',
-+    statusError: '状态刷新失败，当前结果可能已过时。', loading: '正在加载巡检设置…', loadError: '无法加载巡检设置',
++    noResults: '暂无检测结果', noResultsHint: '保存设置并启用后，等待定时检测或点击顺序检测全部。', noMatches: '没有匹配的检测结果',
++    statusError: '状态刷新失败，当前结果可能已过时。', loading: '正在加载检测设置…', loadError: '无法加载检测设置',
 +    localTime: '时间按浏览器本地时区显示；页面可见时每 5 秒刷新。',
 +  }
 +}
@@ -8323,19 +8471,19 @@ index b86114e058b56e4c26d2c278d4decc607f2129c5..bc05f7d2949fd5e112e3a0436202e9a5
 +  ...gptAccountMonitor,
  }
 diff --git a/frontend/src/i18n/locales/zh/common.ts b/frontend/src/i18n/locales/zh/common.ts
-index d2377249d0644d00c03828cf1debb9bd5cd2f1b3..91fe6d9934a9051e0bccaaa45800bcd8bf128621 100644
+index d2377249d0644d00c03828cf1debb9bd5cd2f1b3..668c42db1bdc349f379836f0ab53e1a30cabd844 100644
 --- a/frontend/src/i18n/locales/zh/common.ts
 +++ b/frontend/src/i18n/locales/zh/common.ts
 @@ -183,6 +183,7 @@ export default {
      subscriptions: '订阅管理',
      accounts: '账号管理',
      plugins: '插件管理',
-+    gptAccountMonitor: 'GPT 账号巡检',
++    gptAccountMonitor: '智商检测',
      proxies: 'IP管理',
      redeemCodes: '兑换码',
      ops: '运维监控',
 diff --git a/frontend/src/router/index.ts b/frontend/src/router/index.ts
-index 1881ff393c0f2af44a198b9514425434a709d331..f7f8adb7a987b01e3b4c4a07ca36bd37dd23910f 100644
+index 1881ff393c0f2af44a198b9514425434a709d331..533cdf87b9c1c4119cc7da68914c65f92a3bf06f 100644
 --- a/frontend/src/router/index.ts
 +++ b/frontend/src/router/index.ts
 @@ -525,6 +525,18 @@ const routes: RouteRecordRaw[] = [
@@ -8349,7 +8497,7 @@ index 1881ff393c0f2af44a198b9514425434a709d331..f7f8adb7a987b01e3b4c4a07ca36bd37
 +    meta: {
 +      requiresAuth: true,
 +      requiresAdmin: true,
-+      title: 'GPT Account Monitor',
++      title: 'Intelligence Check',
 +      titleKey: 'admin.gptAccountMonitor.title',
 +      descriptionKey: 'admin.gptAccountMonitor.description'
 +    }
@@ -8357,82 +8505,12 @@ index 1881ff393c0f2af44a198b9514425434a709d331..f7f8adb7a987b01e3b4c4a07ca36bd37
    {
      path: '/admin/plugins',
      name: 'AdminPlugins',
-diff --git a/frontend/src/views/admin/AccountsView.vue b/frontend/src/views/admin/AccountsView.vue
-index 9b9a4b59a1f0b2e5915308e548069fe05b4b39ce..01ce1a0b2f01caf09e825ee751d773cdc571699b 100644
---- a/frontend/src/views/admin/AccountsView.vue
-+++ b/frontend/src/views/admin/AccountsView.vue
-@@ -18,6 +18,7 @@
-             @create="showCreate = true"
-           >
-             <template #after>
-+              <button v-if="gptMonitorAccountID !== null" type="button" class="btn btn-secondary" @click="gptMonitorResultVisible = true">{{ t('admin.gptAccountMonitor.accountAction') }} #{{ gptMonitorAccountID }}</button>
-               <!-- Auto Refresh Dropdown -->
-               <div class="relative" ref="autoRefreshDropdownRef">
-                 <button
-@@ -436,6 +437,10 @@
-           </template>
-           <template #cell-actions="{ row }">
-             <div class="flex items-center gap-1">
-+              <button v-if="canRunGPTMonitor(row)" type="button" :data-testid="`gpt-test-${row.id}`" :disabled="gptMonitorBusy" :title="t('admin.gptAccountMonitor.accountRunHint')" @click="handleGPTMonitorTest(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-dark-700 dark:hover:text-primary-400">
-+                <Icon name="play" size="sm" />
-+                <span class="whitespace-nowrap text-xs">{{ t('admin.gptAccountMonitor.accountTest') }}</span>
-+              </button>
-               <button @click="handleEdit(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400">
-                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
-                 <span class="text-xs">{{ t('common.edit') }}</span>
-@@ -461,7 +466,7 @@
-     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
-     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
-     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
--    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
-+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" :gpt-monitor-busy="gptMonitorBusy" @close="menu.show = false" @test="handleTest" @gpt-monitor-test="handleGPTMonitorTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
-     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
-     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
-     <BulkEditAccountModal
-@@ -487,6 +492,8 @@
-     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
-     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
-     <TotpStepUpDialog :controller="accountExportStepUp" />
-+    <TotpStepUpDialog :controller="gptMonitorStepUp" />
-+    <GPTAccountTestResultDialog :show="gptMonitorResultVisible" :account-id="gptMonitorAccountID" :result="gptMonitorResult" :query-error="gptMonitorQueryError" :query-paused="gptMonitorQueryPaused" @close="gptMonitorResultVisible = false" @resume="resumeGPTMonitorQuery" @stop="stopGPTMonitorQuery" />
-   </AppLayout>
- </template>
- 
-@@ -501,6 +508,7 @@ import { useTableLoader } from '@/composables/useTableLoader'
- import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
- import { useTableSelection } from '@/composables/useTableSelection'
- import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
-+import { useGPTAccountMonitorTest } from '@/composables/useGPTAccountMonitorTest'
- import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
- import AppLayout from '@/components/layout/AppLayout.vue'
- import TablePageLayout from '@/components/layout/TablePageLayout.vue'
-@@ -516,6 +524,7 @@ import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
- import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
- import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
- import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
-+import GPTAccountTestResultDialog from '@/components/admin/account/GPTAccountTestResultDialog.vue'
- import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
- import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
- import type { SelectOption } from '@/components/common/Select.vue'
-@@ -2313,6 +2322,12 @@ const handleExportData = async () => {
-   }
- }
- const accountExportStepUp = useStepUp()
-+const { busy: gptMonitorBusy, runAccount: runGPTMonitorAccount, stepUp: gptMonitorStepUp, visible: gptMonitorResultVisible, accountID: gptMonitorAccountID, result: gptMonitorResult, queryError: gptMonitorQueryError, queryPaused: gptMonitorQueryPaused, resumeQuery: resumeGPTMonitorQuery, stopQuery: stopGPTMonitorQuery } = useGPTAccountMonitorTest()
-+const canRunGPTMonitor = (account: AccountListItem) => account.platform === 'openai' && account.type === 'oauth' && account.parent_account_id == null && account.status === 'active' && (!account.expires_at || account.expires_at * 1000 > Date.now())
-+const handleGPTMonitorTest = (account: AccountListItem) => {
-+  if (!canRunGPTMonitor(account)) return
-+  void runGPTMonitorAccount(account.id)
-+}
- const closeTestModal = () => { showTest.value = false; testingAcc.value = null }
- const closeStatsModal = () => { showStats.value = false; statsAcc.value = null }
- const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 diff --git a/frontend/src/views/admin/GPTAccountMonitorView.vue b/frontend/src/views/admin/GPTAccountMonitorView.vue
 new file mode 100644
-index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a85b4857c
+index 0000000000000000000000000000000000000000..94571ea51b4fc1c4a25a55762eaa452979eea2ce
 --- /dev/null
 +++ b/frontend/src/views/admin/GPTAccountMonitorView.vue
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,367 @@
 +<template>
 +  <AppLayout>
 +    <div class="mx-auto max-w-7xl space-y-6">
@@ -8447,20 +8525,23 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +          <p class="text-sm text-gray-500 dark:text-gray-400">{{ tr('description') }}</p>
 +        </div>
 +        <div class="flex flex-wrap gap-2">
++          <input v-model.number="manualAccountID" type="number" min="1" step="1" class="input w-32" :placeholder="tr('accountID')" :aria-label="tr('accountID')" data-testid="single-account-id" />
++          <button type="button" class="btn btn-secondary" data-testid="run-account-id" :disabled="!loaded || busy || singleBusy || status.running || status.queued || dirty || !validManualAccountID" :title="dirty ? tr('saveFirst') : tr('accountRunHint')" @click="runAccount(Number(manualAccountID))"><Icon name="play" size="sm" />{{ tr('runAccount') }}</button>
++          <button v-if="singleAccountID !== null" type="button" class="btn btn-secondary" data-testid="single-result-open" @click="singleResultVisible = true">{{ tr('runAccount') }} #{{ singleAccountID }}</button>
 +          <button type="button" class="btn btn-secondary" data-testid="refresh" :disabled="refreshing" @click="refreshStatus()">
 +            <Icon name="refresh" size="sm" :class="{ 'animate-spin': refreshing }" />{{ tr('refresh') }}
 +          </button>
-+          <button type="button" class="btn btn-primary" data-testid="run" :disabled="!loaded || busy || status.running || status.queued || dirty || !savedConfig?.enabled" :title="dirty ? tr('saveFirst') : !savedConfig?.enabled ? tr('enableFirst') : tr('runHint')" @click="runNow">
++          <button type="button" class="btn btn-primary" data-testid="run" :disabled="!loaded || busy || singleBusy || status.running || status.queued || dirty || !savedConfig?.enabled" :title="dirty ? tr('saveFirst') : !savedConfig?.enabled ? tr('enableFirst') : tr('runHint')" @click="runNow">
 +            <Icon name="play" size="sm" />{{ tr('run') }}
 +          </button>
 +        </div>
 +      </header>
 +
-+      <div class="grid gap-4 sm:grid-cols-3">
++      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 +        <div v-for="kind in resultKinds" :key="kind" class="card p-5">
 +          <div class="flex items-center justify-between">
 +            <p class="text-sm text-gray-500 dark:text-gray-400">{{ tr(kind) }}</p>
-+            <Icon :name="kind === 'normal' ? 'checkCircle' : kind === 'abnormal' ? 'xCircle' : 'exclamationCircle'" size="lg" :class="kind === 'normal' ? 'text-emerald-500' : kind === 'abnormal' ? 'text-rose-500' : 'text-amber-500'" />
++            <Icon :name="kind === 'normal' ? 'checkCircle' : kind === 'abnormal' ? 'xCircle' : kind === 'skipped' ? 'clock' : 'exclamationCircle'" size="lg" :class="kind === 'normal' ? 'text-emerald-500' : kind === 'abnormal' ? 'text-rose-500' : kind === 'skipped' ? 'text-gray-400' : 'text-amber-500'" />
 +          </div>
 +          <p class="mt-3 text-3xl font-semibold tabular-nums text-gray-900 dark:text-white" :data-testid="`count-${kind}`">{{ counts[kind] }}</p>
 +          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ tr(`${kind}Hint`) }}</p>
@@ -8565,7 +8646,7 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +                <td class="whitespace-nowrap px-4 py-4"><span class="rounded-full px-2 py-1 text-xs font-medium" :class="verdictClass(account.verdict)">{{ tr(verdictKind(account.verdict)) }}</span></td>
 +                <td class="whitespace-nowrap px-4 py-4"><p :class="account.schedulable ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'">{{ tr(account.schedulable ? 'scheduleOn' : 'scheduleOff') }}</p><p class="mt-1 text-xs text-gray-400">{{ tr(account.changed ? 'changed' : 'unchanged') }}</p><p v-if="account.pending_verdict" class="mt-2 text-xs text-amber-600 dark:text-amber-400" data-testid="confirmation">{{ tr('confirmationProgress', { verdict: tr(verdictKind(account.pending_verdict)), count: account.consecutive || 1 }) }}</p><p v-if="account.next_check_at" class="mt-1 text-xs text-gray-400" data-testid="next-check">{{ tr('nextCheck') }}: {{ dateText(account.next_check_at) }}</p></td>
 +                <td class="min-w-64 max-w-lg px-5 py-4"><p class="whitespace-pre-wrap break-words text-gray-800 dark:text-gray-200" data-testid="answer">{{ account.answer || '—' }}</p><p class="mt-2 break-words text-xs text-gray-500">{{ account.message }}</p><p class="mt-1 text-xs text-gray-400" data-testid="result-model">{{ account.model }}<template v-if="account.reasoning_effort"> · {{ account.reasoning_effort === GPT_ACCOUNT_MONITOR_REASONING_EFFORT ? 'XHigh' : account.reasoning_effort }}</template> · iPhone {{ account.expected_generation }}</p></td>
-+                <td class="whitespace-nowrap px-4 py-4"><button type="button" class="btn btn-secondary btn-sm" :data-testid="`run-account-${account.account_id}`" :disabled="!loaded || busy || status.running || status.queued || dirty" :title="dirty ? tr('saveFirst') : tr('accountRunHint')" :aria-label="`${tr('runAccount')} ${account.name || `#${account.account_id}`}`" @click="runAccount(account.account_id)"><Icon name="play" size="sm" />{{ tr(runningAccountID === account.account_id ? 'testingAccount' : 'runAccount') }}</button></td>
++                <td class="whitespace-nowrap px-4 py-4"><button type="button" class="btn btn-secondary btn-sm" :data-testid="`run-account-${account.account_id}`" :disabled="!loaded || busy || singleBusy || status.running || status.queued || dirty" :title="dirty ? tr('saveFirst') : tr('accountRunHint')" :aria-label="`${tr('runAccount')} ${account.name || `#${account.account_id}`}`" @click="runAccount(account.account_id)"><Icon name="play" size="sm" />{{ tr(runningAccountID === account.account_id ? 'testingAccount' : 'runAccount') }}</button></td>
 +              </tr>
 +              <tr v-if="!filteredResults.length"><td colspan="6" class="p-10 text-center"><Icon name="clock" size="xl" class="mx-auto mb-3 text-gray-300" /><p class="text-sm text-gray-600 dark:text-gray-300">{{ tr(status.accounts.length ? 'noMatches' : 'noResults') }}</p><p v-if="!status.accounts.length" class="mt-2 text-xs text-gray-400">{{ tr('noResultsHint') }}</p></td></tr>
 +            </tbody>
@@ -8575,6 +8656,8 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +      <p class="text-xs text-gray-400">{{ tr('localTime') }} {{ tr('currentRecords') }}</p>
 +    </div>
 +    <TotpStepUpDialog :controller="stepUp" />
++    <TotpStepUpDialog :controller="singleStepUp" />
++    <GPTAccountTestResultDialog :show="singleResultVisible" :account-id="singleAccountID" :result="singleResult" :query-error="singleQueryError" :query-paused="singleQueryPaused" @close="singleResultVisible = false" @resume="resumeSingleQuery" @stop="stopSingleQuery" />
 +  </AppLayout>
 +</template>
 +
@@ -8588,21 +8671,26 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +import AppLayout from '@/components/layout/AppLayout.vue'
 +import Icon from '@/components/icons/Icon.vue'
 +import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
++import GPTAccountTestResultDialog from '@/components/admin/account/GPTAccountTestResultDialog.vue'
 +import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
++import { useGPTAccountMonitorTest } from '@/composables/useGPTAccountMonitorTest'
 +
 +const { t } = useI18n()
 +const tr = (key: string, values: Record<string, string | number> = {}) => t(`admin.gptAccountMonitor.${key}`, values)
 +const appStore = useAppStore()
 +const stepUp = useStepUp()
++const { busy: singleBusy, runAccount: runSingleAccount, stepUp: singleStepUp, visible: singleResultVisible, accountID: singleAccountID, result: singleResult, queryError: singleQueryError, queryPaused: singleQueryPaused, resumeQuery: resumeSingleQuery, stopQuery: stopSingleQuery } = useGPTAccountMonitorTest()
 +const form = reactive<GPTAccountMonitorConfig>({ enabled: false, interval_seconds: 1800, timeout_seconds: 90, concurrency: 1, model: GPT_ACCOUNT_MONITOR_MODEL, reasoning_effort: GPT_ACCOUNT_MONITOR_REASONING_EFFORT, prompt: '', expected_generation: 17, account_ids: [], run_on_start: true })
 +const savedConfig = ref<GPTAccountMonitorConfig | null>(null)
 +const scope = ref<'all' | 'selected'>('all')
 +const status = ref<GPTAccountMonitorStatus>({ enabled: false, running: false, last_run: null, next_run: null, message: '', total_accounts: 0, accounts: [] })
 +const loading = ref(true), loaded = ref(false), saving = ref(false), running = ref(false), refreshing = ref(false)
 +const runningAccountID = ref<number | null>(null)
++const manualAccountID = ref<number | string>('')
++const validManualAccountID = computed(() => Number.isInteger(Number(manualAccountID.value)) && Number(manualAccountID.value) > 0)
 +const loadError = ref(''), statusError = ref(''), accountError = ref('')
 +const busy = computed(() => saving.value || running.value)
-+const resultKinds = ['normal', 'abnormal', 'error'] as const
++const resultKinds = ['normal', 'abnormal', 'error', 'skipped'] as const
 +const resultSearch = ref(''), verdictFilter = ref('all')
 +const accountSearch = ref(''), accountPage = ref(1), accountPages = ref(1), accountsLoading = ref(false)
 +const accountOptions = ref<AccountListItem[]>([])
@@ -8690,7 +8778,7 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +  finally { saving.value = false }
 +}
 +async function runNow() {
-+  if (!loaded.value || busy.value || status.value.running || status.value.queued || stopped) return
++  if (!loaded.value || busy.value || singleBusy.value || status.value.running || status.value.queued || stopped) return
 +  if (dirty.value) { appStore.showError(tr('saveFirst')); return }
 +  if (!savedConfig.value?.enabled) { appStore.showError(tr('enableFirst')); return }
 +  running.value = true
@@ -8705,15 +8793,15 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +  finally { running.value = false }
 +}
 +async function runAccount(accountID: number) {
-+  if (!loaded.value || busy.value || status.value.running || status.value.queued || stopped) return
++  if (!Number.isInteger(accountID) || accountID < 1) return
++  if (!loaded.value || busy.value || singleBusy.value || status.value.running || status.value.queued || stopped) return
 +  if (dirty.value) { appStore.showError(tr('saveFirst')); return }
 +  running.value = true
 +  runningAccountID.value = accountID
 +  try {
-+    const result = await stepUp.run(() => request(signal => adminAPI.gptAccountMonitor.runAccount(accountID, signal)))
-+    if (!stopped) {
-+      if (result.queued) { status.value.queued = true; appStore.showSuccess(tr('accountQueued', { id: accountID })) }
-+      else appStore.showInfo(result.message || tr('queueBusy'))
++    const result = await runSingleAccount(accountID)
++    if (!stopped && result) {
++      if (result.queued) status.value.queued = true
 +      await refreshStatus(true)
 +    }
 +  } catch (error) { report(error) }
@@ -8748,9 +8836,9 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +  accountPage.value = 1
 +  searchTimer = setTimeout(() => { void loadAccounts() }, 250)
 +}, { flush: 'sync' })
-+function verdictKind(verdict: string): typeof resultKinds[number] | 'pending' { return verdict === 'pending' ? 'pending' : verdict === 'normal' || verdict === 'pass' ? 'normal' : verdict === 'abnormal' || verdict === 'fail' ? 'abnormal' : 'error' }
++function verdictKind(verdict: string): typeof resultKinds[number] | 'pending' { return verdict === 'pending' ? 'pending' : verdict === 'skipped' ? 'skipped' : verdict === 'normal' || verdict === 'pass' ? 'normal' : verdict === 'abnormal' || verdict === 'fail' ? 'abnormal' : 'error' }
 +const counts = computed(() => {
-+  const value = { normal: 0, abnormal: 0, error: 0 }
++  const value = { normal: 0, abnormal: 0, error: 0, skipped: 0 }
 +  for (const account of status.value.accounts) {
 +    const kind = verdictKind(account.verdict)
 +    if (kind !== 'pending') value[kind]++
@@ -8762,7 +8850,7 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +  return status.value.accounts.filter(account => (verdictFilter.value === 'all' || verdictKind(account.verdict) === verdictFilter.value) && (!search || `${account.account_id} ${account.name} ${account.answer || ''} ${account.message}`.toLowerCase().includes(search)))
 +})
 +function verdictClass(verdict: string) {
-+  if (verdictKind(verdict) === 'pending') return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
++  if (['pending', 'skipped'].includes(verdictKind(verdict))) return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
 +  return verdictKind(verdict) === 'normal' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300' : verdictKind(verdict) === 'abnormal' ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
 +}
 +function dateText(value: string | null) {
@@ -8792,10 +8880,10 @@ index 0000000000000000000000000000000000000000..c5a8474fecda74ece0a5a3b9d28fe09a
 +</style>
 diff --git a/frontend/src/views/admin/__tests__/AccountsView.gptmonitor.spec.ts b/frontend/src/views/admin/__tests__/AccountsView.gptmonitor.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d36ef5a89e2b2ce358799c0e39e5dc29a9e325e7
+index 0000000000000000000000000000000000000000..ccf245afd5128bfeb7b93af81d0cf705662d9f3a
 --- /dev/null
 +++ b/frontend/src/views/admin/__tests__/AccountsView.gptmonitor.spec.ts
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,42 @@
 +import { defineComponent } from 'vue'
 +import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8820,8 +8908,6 @@ index 0000000000000000000000000000000000000000..d36ef5a89e2b2ce358799c0e39e5dc29
 +  localStorage.clear()
 +  vi.clearAllMocks()
 +  listAccounts.mockResolvedValue({ items: [primary, { ...primary, id: 43, type: 'apikey' }, { ...primary, id: 44, parent_account_id: 42 }, { ...primary, id: 45, expires_at: 1 }], total: 4, page: 1, page_size: 20, pages: 1 })
-+  getAccountResult.mockResolvedValue({ account_id: 42, checked_at: null, verdict: 'pending' })
-+  runAccount.mockResolvedValue({ queued: true, message: 'queued' })
 +})
 +function mountView() {
 +  return mount(AccountsView, { global: { stubs: {
@@ -8829,36 +8915,34 @@ index 0000000000000000000000000000000000000000..d36ef5a89e2b2ce358799c0e39e5dc29
 +    AccountTableActions: { template: '<div><slot name="after" /></div>' }, AccountTableFilters: true, AccountBulkActionsBar: true, Pagination: true, ConfirmDialog: true, AccountActionMenu: true, ImportDataModal: true, ReAuthAccountModal: true, AccountTestModal: true, AccountStatsModal: true, ScheduledTestsPanel: true, SyncFromCrsModal: true, TempUnschedStatusModal: true, ErrorPassthroughRulesModal: true, TLSFingerprintProfilesModal: true, CreateAccountModal: true, EditAccountModal: true, BulkEditAccountModal: true, PlatformTypeBadge: true, AccountCapacityCell: true, AccountStatusIndicator: true, AccountTodayStatsCell: true, AccountGroupsCell: true, AccountUsageCell: true, UpstreamBillingRateCell: true, HelpTooltip: true, Icon: true, TotpStepUpDialog: true, GPTAccountTestResultDialog: true,
 +  } } })
 +}
-+describe('account row GPT test action', () => {
-+  it('only shows the direct button for eligible OAuth accounts and submits a single account', async () => {
++describe('account page actions', () => {
++  it('keeps intelligence checks out of the account page and does not query their results', async () => {
 +    const wrapper = mountView()
 +    await flushPromises()
-+    expect(wrapper.find('[data-testid=gpt-test-42]').exists()).toBe(true)
-+    for (const id of [43, 44, 45]) expect(wrapper.find(`[data-testid=gpt-test-${id}]`).exists()).toBe(false)
-+    await wrapper.get('[data-testid=gpt-test-42]').trigger('click')
-+    await flushPromises()
-+    expect(runAccount).toHaveBeenCalledTimes(1)
-+    expect(runAccount).toHaveBeenCalledWith(42, expect.any(AbortSignal))
-+    expect(wrapper.get('[data-testid=gpt-test-42]').attributes('disabled')).toBeDefined()
++    for (const id of [42, 43, 44, 45]) expect(wrapper.find(`[data-testid=gpt-test-${id}]`).exists()).toBe(false)
++    expect(wrapper.text()).not.toContain('admin.gptAccountMonitor.')
++    expect(wrapper.find('g-p-t-account-test-result-dialog-stub').exists()).toBe(false)
++    expect(runAccount).not.toHaveBeenCalled()
++    expect(getAccountResult).not.toHaveBeenCalled()
 +  })
 +})
 diff --git a/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d664389ee1da5eecae44d9390eef39a505824438
+index 0000000000000000000000000000000000000000..d749605f774f6e8d247a9d820509c47060f26265
 --- /dev/null
 +++ b/frontend/src/views/admin/__tests__/GPTAccountMonitorView.spec.ts
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,403 @@
 +import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import GPTAccountMonitorView from '../GPTAccountMonitorView.vue'
 +import type { GPTAccountMonitorConfig, GPTAccountMonitorStatus } from '@/api/admin/gptAccountMonitor'
 +
 +enableAutoUnmount(afterEach)
-+const { getConfig, saveConfig, getStatus, run, runAccount, listAccounts, showError, showSuccess, stepUpRun, onCancel } = vi.hoisted(() => ({
-+  getConfig: vi.fn(), saveConfig: vi.fn(), getStatus: vi.fn(), run: vi.fn(), runAccount: vi.fn(), listAccounts: vi.fn(),
++const { getConfig, saveConfig, getStatus, run, runAccount, getAccountResult, listAccounts, showError, showSuccess, stepUpRun, onCancel } = vi.hoisted(() => ({
++  getConfig: vi.fn(), saveConfig: vi.fn(), getStatus: vi.fn(), run: vi.fn(), runAccount: vi.fn(), getAccountResult: vi.fn(), listAccounts: vi.fn(),
 +  showError: vi.fn(), showSuccess: vi.fn(), stepUpRun: vi.fn((action: () => Promise<unknown>) => action()), onCancel: vi.fn(),
 +}))
-+vi.mock('@/api/admin', () => ({ adminAPI: { gptAccountMonitor: { getConfig, saveConfig, getStatus, run, runAccount }, accounts: { list: listAccounts } } }))
++vi.mock('@/api/admin', () => ({ adminAPI: { gptAccountMonitor: { getConfig, saveConfig, getStatus, run, runAccount, getAccountResult }, accounts: { list: listAccounts } } }))
 +vi.mock('@/stores', () => ({ useAppStore: () => ({ showError, showSuccess, showInfo: vi.fn() }) }))
 +vi.mock('vue-i18n', async (importOriginal) => ({
 +  ...(await importOriginal<typeof import('vue-i18n')>()), useI18n: () => ({ t: (key: string, values?: Record<string, string | number>) => key.endsWith('.confirmationProgress') ? `${values?.verdict} (${values?.count}/2)` : key }),
@@ -8876,7 +8960,7 @@ index 0000000000000000000000000000000000000000..d664389ee1da5eecae44d9390eef39a5
 +] }
 +function mountView() {
 +  return mount(GPTAccountMonitorView, { global: {
-+    stubs: { AppLayout: { template: '<div><slot /></div>' }, Icon: true, TotpStepUpDialog: true },
++    stubs: { AppLayout: { template: '<div><slot /></div>' }, Icon: true, TotpStepUpDialog: true, BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' } },
 +  } })
 +}
 +function deferred<T>() {
@@ -8892,6 +8976,7 @@ index 0000000000000000000000000000000000000000..d664389ee1da5eecae44d9390eef39a5
 +  saveConfig.mockImplementation(async (value: GPTAccountMonitorConfig) => ({ ...value }))
 +  run.mockResolvedValue({ queued: true, message: '已提交巡检' })
 +  runAccount.mockResolvedValue({ queued: true, message: '已提交单号测试' })
++  getAccountResult.mockImplementation(async (accountID: number) => ({ ...status.accounts[0], account_id: accountID, manual_attempts: 0, manual_requested: false, manual_running: false }))
 +  stepUpRun.mockImplementation((action: () => Promise<unknown>) => action())
 +  listAccounts.mockResolvedValue({ page: 1, pages: 1, page_size: 50, total: 5, items: [
 +    { id: 7, name: 'OAuth primary', platform: 'openai', type: 'oauth', status: 'active', proxy_id: 1, proxy: { name: 'Proxy A' } },
@@ -9128,6 +9213,45 @@ index 0000000000000000000000000000000000000000..d664389ee1da5eecae44d9390eef39a5
 +    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(0)
 +    await wrapper.get('[data-testid=verdict-filter]').setValue('pending')
 +    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++  })
++
++  it('shows skipped accounts separately from errors and can filter them', async () => {
++    getStatus.mockResolvedValue({ ...status, accounts: [{ ...status.accounts[0], verdict: 'skipped', answer: '', message: '账号使用额度为 100%，已跳过检测', changed: false, error_code: 'quota_exhausted' }] })
++    const wrapper = mountView()
++    await flushPromises()
++    expect(wrapper.get('[data-testid=count-skipped]').text()).toBe('1')
++    expect(wrapper.get('[data-testid=count-error]').text()).toBe('0')
++    expect(wrapper.get('[data-testid=result-row]').text()).toContain('admin.gptAccountMonitor.skipped')
++    await wrapper.get('[data-testid=verdict-filter]').setValue('error')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(0)
++    await wrapper.get('[data-testid=verdict-filter]').setValue('skipped')
++    expect(wrapper.findAll('[data-testid=result-row]')).toHaveLength(1)
++  })
++
++  it('checks an account outside the saved scope, displays its result, and allows saving while waiting', async () => {
++    vi.useFakeTimers()
++    getConfig.mockResolvedValue({ ...config, enabled: false, account_ids: [7] })
++    getStatus.mockResolvedValue({ ...status, enabled: false, total_accounts: 1, accounts: [status.accounts[0]] })
++    getAccountResult.mockResolvedValueOnce({ ...status.accounts[0], account_id: 12, checked_at: null, manual_attempts: 0 })
++      .mockResolvedValueOnce({ ...status.accounts[0], account_id: 12, checked_at: '2026-10-13T06:05:00Z', verdict: 'skipped', answer: '', message: '账号使用额度为 100%，已跳过检测', changed: false, error_code: 'quota_exhausted', manual_attempts: 1, manual_requested: false, manual_running: false })
++    const wrapper = mountView()
++    await flushPromises()
++    expect(wrapper.find('[data-testid=run-account-12]').exists()).toBe(false)
++    expect(wrapper.get('[data-testid=run-account-id]').attributes('disabled')).toBeDefined()
++    await wrapper.get('[data-testid=single-account-id]').setValue('12')
++    await wrapper.get('[data-testid=run-account-id]').trigger('click')
++    await flushPromises()
++    expect(runAccount).toHaveBeenCalledWith(12, expect.any(AbortSignal))
++    expect(wrapper.get('[data-testid=save]').attributes('disabled')).toBeUndefined()
++    await wrapper.get('[data-testid=interval]').setValue('3600')
++    await wrapper.get('[data-testid=config-form]').trigger('submit')
++    await flushPromises()
++    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ interval_seconds: 3600, account_ids: [7] }), expect.any(AbortSignal))
++    await vi.advanceTimersByTimeAsync(5000)
++    await flushPromises()
++    expect(wrapper.get('[data-testid=single-result]').text()).toContain('admin.gptAccountMonitor.skipped')
++    expect(wrapper.get('[data-testid=single-result]').text()).toContain('账号使用额度为 100%，已跳过检测')
++    expect(runAccount).toHaveBeenCalledTimes(1)
 +  })
 +
 +  it('offers individual tests while scheduling is paused and only submits the chosen account', async () => {
