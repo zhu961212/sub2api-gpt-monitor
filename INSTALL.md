@@ -1,19 +1,19 @@
-# Sub2API 0.2.15：GPT 账号巡检管理页 v2
+# Sub2API 0.2.15：GPT 账号巡检管理页 v3
 
-安装包：`sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz`。基于上游提交 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，构建标记为 `ab80abc-gpt-monitor-ui-v2`，包含 Linux amd64、arm64 程序。
+安装包：`sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz`。按当前实际部署的原版 Sub2API `0.2.15`、完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 构建，构建标记为 `f2669c8-gpt-monitor-ui-v3`，包含 Linux amd64、arm64 程序。v3 在该精确基线上加入账号巡检，不包含此基线之后的上游功能，不新增数据库迁移。
 
 这是内置管理页，直接替换现有容器中的程序。无需插件、公钥、管理员 API Key 或新增容器；普通用户请求继续使用原有转发流程。脚本保留当前镜像，仅重建指定的应用服务，重建时应用会短暂中断。
 
-已安装 v1 的部署，请先按下文“从 v1 升级”回滚，再解压 v2，避免覆盖正在挂载执行的程序。
+当前运行上述完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 原版的部署可直接安装。相同版本号、其他 commit 的构建不能使用本包；安装脚本会在重建容器前拒绝。已安装 v1/v2 的部署，请先按下文“从 v1/v2 升级”用旧包回滚，确认恢复该原版后再解压 v3，避免覆盖正在挂载执行的程序。
 
-v2 按账号 ID 每页 200 个读取巡检所需字段，状态查询只加载页面展示字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
+v3 保留每页 200 个账号的分页读取，只查询巡检或页面展示所需字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
 
 ## 三步安装
 
 1. 将安装包放到**原 Docker Compose 部署目录**，在该目录解压：
 
    ```sh
-   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz
+   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz
    ```
 
 2. 在同一目录执行。第一个参数是原 Compose 文件，第二个是服务名，可按实际名称替换：
@@ -22,7 +22,7 @@ v2 按账号 ID 每页 200 个读取巡检所需字段，状态查询只加载�
    sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
    ```
 
-   脚本会校验文件、确认当前运行版本恰为 `0.2.15`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
+   脚本会校验文件、确认当前运行版本恰为 `0.2.15` 且原始 commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
 
 3. 浏览器强制刷新后台，打开左侧 **GPT 账号巡检**，或直接访问 `/admin/gpt-account-monitor`。检查默认关闭；在页面保存并启用，然后点击“立即检查”查看结果。
 
@@ -30,17 +30,20 @@ v2 按账号 ID 每页 200 个读取巡检所需字段，状态查询只加载�
 
 仅处理启用状态的独立 OpenAI OAuth 账号，包含关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用及已过期账号。每个账号必须绑定启用且未过期的代理，检测和必要的令牌刷新使用该账号代理。缺少有效代理、网络或认证失败时保留调度状态。有效完整回答符合目标型号则开启调度，不符合则关闭，之后继续复检。
 
-## 从 v1 升级
+## 从 v1/v2 升级
 
-不要直接将 v2 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
+v1/v2 基于 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，包含原版 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 之后的上游迁移。回滚恢复原程序，不会撤销已经执行的数据库迁移（例如新增的 `groups.i18n` 字段）；v3 本身不新增迁移。
+
+不要直接将 v3 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
 
 ```sh
 sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
+docker compose -f docker-compose.yml exec -T sub2api /app/sub2api --version
 ```
 
-确认回滚成功后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.v1.yml.bak` 和 `gpt-monitor-patch-v1`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。
+确认输出版本为 `0.2.15`、commit 为完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.pre-v3.yml.bak` 和 `gpt-monitor-patch-pre-v3`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。若原镜像未恢复为该完整 commit，请先恢复正确的原版镜像，不要绕过安装检查。
 
-然后按上述“三步安装”解压 v2 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，再备份旧文件并手动安装 v2，保留原命令全部选项。
+然后按上述“三步安装”解压 v3 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，确认精确基线，再备份旧文件并手动安装 v3，保留原命令全部选项。
 
 ## 后续启动和回滚
 
@@ -51,7 +54,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml up -d --n
 docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml logs --tail=100 sub2api
 ```
 
-程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15`。
+程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15` 的完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`。
 
 ```sh
 sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
@@ -63,7 +66,7 @@ sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
 
 如果原来使用多个 `-f`、`-p` 项目名、`--env-file`、远程 Docker daemon 或多副本，请保留原命令全部选项并手动操作，不直接运行上述脚本。远程 Docker 的绑定路径必须存在于 daemon 所在服务器。
 
-1. 在原部署目录执行 `(cd gpt-monitor-patch && sha256sum -c SHA256SUMS)`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
+1. 在原部署目录执行 `(cd gpt-monitor-patch && sha256sum -c SHA256SUMS)`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`、commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，其他构建不得继续安装；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
 2. 创建同名覆盖文件；将下面镜像 ID、绝对路径、架构和服务名替换为实际值。保留原命令的全部 Compose 文件顺序，只在最后追加新文件：
 
    ```yaml
@@ -84,6 +87,6 @@ sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
    docker compose -p 原项目名 --env-file 原环境文件 -f 原文件一.yml -f 原文件二.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build sub2api
    ```
 
-3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
+3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
 
 安装脚本通过模拟 Docker 命令验证；未连接你的实际 Docker、数据库或真实账号，真实账号巡检与部署效果尚未验证。发布安装包不代表已经部署到你的服务器。

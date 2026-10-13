@@ -38,7 +38,9 @@ case "$container_id" in ''|*[!0-9a-f]*) fail '原部署中必须有且只有一�
 current_version=$(base_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取现有程序版本；未修改容器'
 version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
 [ "$version" = '0.2.15' ] || fail '本安装包仅适用于当前运行版本 0.2.15；未修改容器'
-case "$current_version" in *'commit: ab80abc-gpt-monitor-ui-v2,'*) fail '当前程序已包含此管理页版本，无需重复安装' ;; esac
+current_commit=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<=NF;i++) if ($i=="Sub2API") { if (i+3<=NF && $(i+2)=="(commit:") { commit=$(i+3); sub(/,$/,"",commit); print commit } exit } }')
+[ "$current_commit" != 'f2669c8-gpt-monitor-ui-v3' ] || fail '当前程序已包含此管理页版本，无需重复安装'
+[ "$current_commit" = 'f2669c8cf62555cd92389b3f55920e9e6e7c6ff2' ] || fail '当前构建基线不符：仅接受原版 0.2.15、完整 commit f2669c8cf62555cd92389b3f55920e9e6e7c6ff2；v1/v2 请先使用旧包 rollback.sh 恢复该原版后再安装；未修改容器'
 image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
 case "$image_id" in sha256:*) ;; *) fail '无法确认当前容器的镜像 ID' ;; esac
 platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
@@ -80,7 +82,7 @@ while [ "$attempt" -lt 15 ]; do
   attempt=$((attempt + 1))
   installed_version=$(docker compose -f "$compose_file" -f "$override_file" exec -T "$service" /app/sub2api --version 2>&1) || installed_version=''
   case "$installed_version" in
-    *'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,'*) verified=true; break ;;
+    *'Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,'*) verified=true; break ;;
   esac
   sleep 2
 done

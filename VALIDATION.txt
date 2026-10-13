@@ -1,12 +1,12 @@
-Built-in GPT account monitor v2; baseline Sub2API 0.2.15.
-Build marker: ab80abc-gpt-monitor-ui-v2. Date: 2026-10-13.
+Built-in GPT account monitor v3; exact deployed Sub2API 0.2.15 baseline f2669c8cf62555cd92389b3f55920e9e6e7c6ff2.
+Database migrations and Ent schema match that baseline with no added monitor migrations.
+Build marker: f2669c8-gpt-monitor-ui-v3. Date: 2026-10-13.
 Backend: targeted monitor service, repository, config, handler and server tests passed.
 Regression: same account suspends, stays suspended on network error, recovers, then avoids redundant scheduling writes.
 Queries: 200-account keyset pages; display-only status projection; paused accounts remain eligible.
 Mutations: scheduling CAS and outbox commit atomically; observation persistence performs one write without scheduler cache churn.
-Frontend: 7 monitor page tests and 3 locale completeness tests passed. Frontend source and existing embedded build unchanged in this iteration.
-Deployment: 9 fake Docker tests passed, including v2 repeat-install refusal and v1 marker compatibility.
-Answer benchmark: plain model answer 24646 -> 564.8 ns/op; allocations 34678 -> 48 B/op (local microbenchmark, not end-to-end latency).
+Frontend: 7 monitor page tests and 3 locale completeness tests passed; TypeScript check and a fresh production build use the exact upstream baseline plus the monitor UI.
+Deployment: 12 fake Docker tests passed, covering production log prefixes, exact baseline acceptance, different same-version commit rejection, duplicate v3 refusal, integrity checks and rollback.
 Patch: checked against upstream baseline using an isolated Git index.
 Linux amd64 and arm64: cross-compiled with embedded frontend, ELF architecture verified; not executed on a target server.
-No live GPT account, proxy, database, or Docker deployment was contacted. Validation recorded before GitHub publication; no target deployment performed.
+No live GPT account, proxy, database, or Docker deployment was contacted. Validation recorded before publication; no target deployment performed.

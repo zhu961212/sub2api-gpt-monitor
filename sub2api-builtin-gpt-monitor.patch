@@ -3940,26 +3940,26 @@ index 0000000..b1e9475
 +}
 diff --git a/deploy/gpt-account-monitor/README.md b/deploy/gpt-account-monitor/README.md
 new file mode 100644
-index 0000000..5c2b97f
+index 0000000..018a8d7
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/README.md
-@@ -0,0 +1,89 @@
-+# Sub2API 0.2.15：GPT 账号巡检管理页 v2
+@@ -0,0 +1,92 @@
++# Sub2API 0.2.15：GPT 账号巡检管理页 v3
 +
-+本地安装包：`sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz`。基于上游提交 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，构建标记为 `ab80abc-gpt-monitor-ui-v2`，包含 Linux amd64、arm64 程序。
++安装包：`sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz`。按当前实际部署的原版 Sub2API `0.2.15`、完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 构建，构建标记为 `f2669c8-gpt-monitor-ui-v3`，包含 Linux amd64、arm64 程序。v3 在该精确基线上加入账号巡检，不包含此基线之后的上游功能，不新增数据库迁移。
 +
 +这是内置管理页，直接替换现有容器中的程序。无需插件、公钥、管理员 API Key 或新增容器；普通用户请求继续使用原有转发流程。脚本保留当前镜像，仅重建指定的应用服务，重建时应用会短暂中断。
 +
-+已安装 v1 的部署，请先按下文“从 v1 升级”回滚，再解压 v2，避免覆盖正在挂载执行的程序。
++当前运行上述完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 原版的部署可直接安装。相同版本号、其他 commit 的构建不能使用本包；安装脚本会在重建容器前拒绝。已安装 v1/v2 的部署，请先按下文“从 v1/v2 升级”用旧包回滚，确认恢复该原版后再解压 v3，避免覆盖正在挂载执行的程序。
 +
-+v2 按账号 ID 每页 200 个读取巡检所需字段，状态查询只加载页面展示字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
++v3 保留每页 200 个账号的分页读取，只查询巡检或页面展示所需字段。巡检结果不改变调度时只执行一次数据库写入；调度开关需要改变时，将账号更新与 outbox 调度通知写入同一事务，保证调度变更和通知同时提交。
 +
 +## 三步安装
 +
 +1. 将安装包放到**原 Docker Compose 部署目录**，在该目录解压：
 +
 +   ```sh
-+   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v2.tar.gz
++   tar -xzf sub2api-0.2.15-gpt-monitor-ui-v3.tar.gz
 +   ```
 +
 +2. 在同一目录执行。第一个参数是原 Compose 文件，第二个是服务名，可按实际名称替换：
@@ -3968,7 +3968,7 @@ index 0000000..5c2b97f
 +   sh gpt-monitor-patch/apply.sh docker-compose.yml sub2api
 +   ```
 +
-+   脚本会校验文件、确认当前运行版本恰为 `0.2.15`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
++   脚本会校验文件、确认当前运行版本恰为 `0.2.15` 且原始 commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，并按**当前容器镜像架构**选择程序。它生成 `docker-compose.gpt-monitor.yml`，将程序只读挂载到 `/app/sub2api`；已有同名覆盖文件时会停止。保持原 Compose 文件、`.env` 和部署目录不变，且不要移动或删除 `gpt-monitor-patch`。
 +
 +3. 浏览器强制刷新后台，打开左侧 **GPT 账号巡检**，或直接访问 `/admin/gpt-account-monitor`。检查默认关闭；在页面保存并启用，然后点击“立即检查”查看结果。
 +
@@ -3976,17 +3976,20 @@ index 0000000..5c2b97f
 +
 +仅处理启用状态的独立 OpenAI OAuth 账号，包含关闭调度的账号；排除 API Key、Agent Identity、影子账号、禁用及已过期账号。每个账号必须绑定启用且未过期的代理，检测和必要的令牌刷新使用该账号代理。缺少有效代理、网络或认证失败时保留调度状态。有效完整回答符合目标型号则开启调度，不符合则关闭，之后继续复检。
 +
-+## 从 v1 升级
++## 从 v1/v2 升级
 +
-+不要直接将 v2 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
++v1/v2 基于 `ab80abc6d1f929a6864c8804fd077b509d21fda2`，包含原版 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 之后的上游迁移。回滚恢复原程序，不会撤销已经执行的数据库迁移（例如新增的 `groups.i18n` 字段）；v3 本身不新增迁移。
++
++不要直接将 v3 解压到仍在使用的 `gpt-monitor-patch` 目录。先在原部署目录使用**旧包**的回滚脚本重建应用服务，解除旧程序挂载：
 +
 +```sh
 +sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
++docker compose -f docker-compose.yml exec -T sub2api /app/sub2api --version
 +```
 +
-+确认回滚成功后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.v1.yml.bak` 和 `gpt-monitor-patch-v1`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。
++确认输出版本为 `0.2.15`、commit 为完整 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2` 后，将旧的 `docker-compose.gpt-monitor.yml` 和 `gpt-monitor-patch` 目录分别改名备份，例如 `docker-compose.gpt-monitor.pre-v3.yml.bak` 和 `gpt-monitor-patch-pre-v3`；如备份名已存在，请换一个未使用的名称。回滚脚本保留覆盖文件，而安装脚本会拒绝覆盖该文件，因此需要先移开旧文件。若原镜像未恢复为该完整 commit，请先恢复正确的原版镜像，不要绕过安装检查。
 +
-+然后按上述“三步安装”解压 v2 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，再备份旧文件并手动安装 v2，保留原命令全部选项。
++然后按上述“三步安装”解压 v3 并安装。已有巡检配置和结果保留。原部署有多个 Compose 文件或其他自定义选项时，先按本文手动回滚方式解除挂载，确认精确基线，再备份旧文件并手动安装 v3，保留原命令全部选项。
 +
 +## 后续启动和回滚
 +
@@ -3997,7 +4000,7 @@ index 0000000..5c2b97f
 +docker compose -f docker-compose.yml -f docker-compose.gpt-monitor.yml logs --tail=100 sub2api
 +```
 +
-+程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15`。
++程序为只读挂载，后台自动更新不能直接覆盖它。升级前先回滚，再按目标版本部署；本包只适用于 `0.2.15` 的完整上游提交 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`。
 +
 +```sh
 +sh gpt-monitor-patch/rollback.sh docker-compose.yml sub2api
@@ -4009,7 +4012,7 @@ index 0000000..5c2b97f
 +
 +如果原来使用多个 `-f`、`-p` 项目名、`--env-file`、远程 Docker daemon 或多副本，请保留原命令全部选项并手动操作，不直接运行上述脚本。远程 Docker 的绑定路径必须存在于 daemon 所在服务器。
 +
-+1. 在解压目录执行 `sha256sum -c SHA256SUMS`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
++1. 在原部署目录执行 `(cd gpt-monitor-patch && sha256sum -c SHA256SUMS)`。用原 Compose 命令 `exec -T sub2api /app/sub2api --version` 确认当前版本为 `0.2.15`、commit 完整匹配 `f2669c8cf62555cd92389b3f55920e9e6e7c6ff2`，其他构建不得继续安装；用 `docker inspect` 获取当前容器镜像 ID，再用 `docker image inspect` 查看其架构。
 +2. 创建同名覆盖文件；将下面镜像 ID、绝对路径、架构和服务名替换为实际值。保留原命令的全部 Compose 文件顺序，只在最后追加新文件：
 +
 +   ```yaml
@@ -4030,15 +4033,15 @@ index 0000000..5c2b97f
 +   docker compose -p 原项目名 --env-file 原环境文件 -f 原文件一.yml -f 原文件二.yml -f docker-compose.gpt-monitor.yml up -d --no-deps --force-recreate --pull never --no-build sub2api
 +   ```
 +
-+3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
++3. 使用相同选项执行 `exec -T sub2api /app/sub2api --version`，确认输出包含 `Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,`，再刷新页面。回滚时只去掉新增的 `-f docker-compose.gpt-monitor.yml`，保留原有全部选项，再重建应用服务。
 +
 +安装脚本通过模拟 Docker 命令验证；未连接你的实际 Docker、数据库或真实账号，真实账号巡检与部署效果尚未验证。本地交付不代表已发布或已部署到服务器。
 diff --git a/deploy/gpt-account-monitor/apply.sh b/deploy/gpt-account-monitor/apply.sh
 new file mode 100644
-index 0000000..c6f1f95
+index 0000000..86d101a
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/apply.sh
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,91 @@
 +#!/bin/sh
 +# Apply the built-in management-page binary to one existing Compose service.
 +set -eu
@@ -4079,7 +4082,9 @@ index 0000000..c6f1f95
 +current_version=$(base_compose exec -T "$service" /app/sub2api --version 2>&1) || fail '无法读取现有程序版本；未修改容器'
 +version=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<NF;i++) if ($i=="Sub2API") { print $(i+1); exit } }')
 +[ "$version" = '0.2.15' ] || fail '本安装包仅适用于当前运行版本 0.2.15；未修改容器'
-+case "$current_version" in *'commit: ab80abc-gpt-monitor-ui-v2,'*) fail '当前程序已包含此管理页版本，无需重复安装' ;; esac
++current_commit=$(printf '%s\n' "$current_version" | awk '/Sub2API / { for (i=1;i<=NF;i++) if ($i=="Sub2API") { if (i+3<=NF && $(i+2)=="(commit:") { commit=$(i+3); sub(/,$/,"",commit); print commit } exit } }')
++[ "$current_commit" != 'f2669c8-gpt-monitor-ui-v3' ] || fail '当前程序已包含此管理页版本，无需重复安装'
++[ "$current_commit" = 'f2669c8cf62555cd92389b3f55920e9e6e7c6ff2' ] || fail '当前构建基线不符：仅接受原版 0.2.15、完整 commit f2669c8cf62555cd92389b3f55920e9e6e7c6ff2；v1/v2 请先使用旧包 rollback.sh 恢复该原版后再安装；未修改容器'
 +image_id=$(docker inspect --format '{{.Image}}' "$container_id") || fail '读取当前镜像失败'
 +case "$image_id" in sha256:*) ;; *) fail '无法确认当前容器的镜像 ID' ;; esac
 +platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id") || fail '读取当前镜像架构失败'
@@ -4121,7 +4126,7 @@ index 0000000..c6f1f95
 +  attempt=$((attempt + 1))
 +  installed_version=$(docker compose -f "$compose_file" -f "$override_file" exec -T "$service" /app/sub2api --version 2>&1) || installed_version=''
 +  case "$installed_version" in
-+    *'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2,'*) verified=true; break ;;
++    *'Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3,'*) verified=true; break ;;
 +  esac
 +  sleep 2
 +done
@@ -4158,10 +4163,10 @@ index 0000000..f37d2cf
 +printf '此前检查修改的账号调度开关不会自动还原，请按需在账号管理中调整。\n'
 diff --git a/deploy/gpt-account-monitor/test_scripts.py b/deploy/gpt-account-monitor/test_scripts.py
 new file mode 100644
-index 0000000..b2b8714
+index 0000000..23089ee
 --- /dev/null
 +++ b/deploy/gpt-account-monitor/test_scripts.py
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,267 @@
 +"""Run deployment-script tests with a fake docker command; no daemon is used."""
 +import hashlib
 +import os
@@ -4210,9 +4215,17 @@ index 0000000..b2b8714
 +      config) exit 0 ;;
 +      exec)
 +        if [ -f "$MOCK_STATE" ] && [ "$(cat "$MOCK_STATE")" = patch ]; then
-+          printf 'Sub2API 0.2.15 (commit: ab80abc-gpt-monitor-ui-v2, built: test)\n'
++          if [ -n "$MOCK_INSTALLED_VERSION_OUTPUT" ]; then
++            printf '%s\n' "$MOCK_INSTALLED_VERSION_OUTPUT"
++          else
++            printf 'Sub2API 0.2.15 (commit: f2669c8-gpt-monitor-ui-v3, built: test)\n'
++          fi
 +        else
-+          printf 'Sub2API %s (commit: %s, built: test)\n' "$MOCK_VERSION" "$MOCK_COMMIT"
++          if [ -n "$MOCK_ORIGINAL_VERSION_OUTPUT" ]; then
++            printf '%s\n' "$MOCK_ORIGINAL_VERSION_OUTPUT"
++          else
++            printf 'Sub2API %s (commit: %s, built: test)\n' "$MOCK_VERSION" "$MOCK_COMMIT"
++          fi
 +        fi
 +        exit 0
 +        ;;
@@ -4250,7 +4263,7 @@ index 0000000..b2b8714
 +        (self.root / "docker-compose.yml").write_text("services:\n  custom_api:\n    image: original\n", encoding="utf-8")
 +        for name in ("apply.sh", "rollback.sh", "README.md"):
 +            shutil.copyfile(HERE / name, self.bundle / name)
-+        (self.bundle / "UPSTREAM_BASE.txt").write_text("ab80abc6d1f929a6864c8804fd077b509d21fda2\n", encoding="utf-8")
++        (self.bundle / "UPSTREAM_BASE.txt").write_text("f2669c8cf62555cd92389b3f55920e9e6e7c6ff2\n", encoding="utf-8")
 +        for arch in ("amd64", "arm64"):
 +            binary = self.bundle / "bin" / ("linux-" + arch) / "sub2api"
 +            binary.parent.mkdir(parents=True)
@@ -4266,7 +4279,9 @@ index 0000000..b2b8714
 +            "MOCK_STATE": shell_path(self.root / "state"),
 +            "MOCK_COMPOSE_OK": "true",
 +            "MOCK_VERSION": "0.2.15",
-+            "MOCK_COMMIT": "ab80abc",
++            "MOCK_COMMIT": "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2",
++            "MOCK_ORIGINAL_VERSION_OUTPUT": "",
++            "MOCK_INSTALLED_VERSION_OUTPUT": "",
 +            "MOCK_PLATFORM": "linux/amd64",
 +            "MOCK_CONTAINER_ID": "a" * 64,
 +        })
@@ -4310,6 +4325,33 @@ index 0000000..b2b8714
 +        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 +        self.assertIn("linux-arm64/sub2api", (self.root / "docker-compose.gpt-monitor.yml").read_text(encoding="utf-8"))
 +
++    def test_actual_log_prefixed_version_installs_and_verifies(self):
++        original = (
++            "2026-10-13T15:40:32.556+0800 INFO stdlog "
++            "Sub2API 0.2.15 (commit: f2669c8cf62555cd92389b3f55920e9e6e7c6ff2, "
++            'built: 2026-10-09T03:28:03Z) {"service":"sub2api"}'
++        )
++        self.env["MOCK_ORIGINAL_VERSION_OUTPUT"] = original
++        self.env["MOCK_INSTALLED_VERSION_OUTPUT"] = original.replace(
++            "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2", "f2669c8-gpt-monitor-ui-v3"
++        )
++        result = self.run_script()
++        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++        self.assertEqual(sum("|up|" in line for line in self.calls()), 1)
++        self.assertIn("安装完成", result.stdout)
++
++    def test_log_prefixed_other_commit_never_recreates(self):
++        self.env["MOCK_ORIGINAL_VERSION_OUTPUT"] = (
++            "2026-10-13T15:40:32.556+0800 INFO stdlog "
++            "Sub2API 0.2.15 (commit: ab80abc6d1f929a6864c8804fd077b509d21fda2, "
++            'built: 2026-10-09T03:28:03Z) {"service":"sub2api"}'
++        )
++        result = self.run_script()
++        self.assertNotEqual(result.returncode, 0)
++        self.assertIn("当前构建基线不符", result.stderr)
++        self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
 +    def test_wrong_version_and_arch_never_recreate(self):
 +        for key, value in (("MOCK_VERSION", "0.2.16"), ("MOCK_PLATFORM", "linux/386")):
 +            with self.subTest(key=key):
@@ -4328,19 +4370,40 @@ index 0000000..b2b8714
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertEqual(self.calls(), [])
 +
-+    def test_existing_v2_stops_before_recreate(self):
-+        self.env["MOCK_COMMIT"] = "ab80abc-gpt-monitor-ui-v2"
++    def test_existing_v3_stops_before_recreate(self):
++        self.env["MOCK_COMMIT"] = "f2669c8-gpt-monitor-ui-v3"
 +        result = self.run_script()
 +        self.assertNotEqual(result.returncode, 0)
 +        self.assertIn("当前程序已包含此管理页版本", result.stderr)
 +        self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
 +        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
-+    def test_v1_marker_does_not_trigger_v2_duplicate_guard(self):
-+        self.env["MOCK_COMMIT"] = "ab80abc-gpt-monitor-ui-v1"
-+        result = self.run_script()
-+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-+        self.assertEqual(sum("|up|" in line for line in self.calls()), 1)
++    def test_same_version_with_other_commit_never_recreates(self):
++        for commit in (
++            "ab80abc6d1f929a6864c8804fd077b509d21fda2",
++            "f2669c8",
++            "f2669c8cf62555cd92389b3f55920e9e6e7c6ff2-custom",
++            "unknown",
++            "",
++        ):
++            with self.subTest(commit=commit):
++                self.env["MOCK_COMMIT"] = commit
++                result = self.run_script()
++                self.assertNotEqual(result.returncode, 0)
++                self.assertIn("当前构建基线不符", result.stderr)
++                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
++
++    def test_v1_and_v2_require_rollback_to_original_baseline(self):
++        for commit in ("ab80abc-gpt-monitor-ui-v1", "ab80abc-gpt-monitor-ui-v2"):
++            with self.subTest(commit=commit):
++                self.env["MOCK_COMMIT"] = commit
++                result = self.run_script()
++                self.assertNotEqual(result.returncode, 0)
++                self.assertIn("当前构建基线不符", result.stderr)
++                self.assertIn("旧包 rollback.sh", result.stderr)
++                self.assertFalse((self.root / "docker-compose.gpt-monitor.yml").exists())
++        self.assertFalse(any("|up|" in line for line in self.calls()))
 +
 +    def test_existing_override_is_not_overwritten(self):
 +        override = self.root / "docker-compose.gpt-monitor.yml"
