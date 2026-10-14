@@ -37,9 +37,9 @@ poll_current=$(docker exec "$poll_container" /app/sub2api --version 2>&1) || pol
 poll_version_fields "$poll_current"
 [ "$poll_version" = 0.2.16 ] || poll_fail '仅支持当前运行版本 0.2.16'
 case "$poll_commit" in
-  "$poll_marker") poll_fail '当前已经运行此智商检测版本，无需重复更新' ;;
-  "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch) poll_old_commit=$poll_commit ;;
-  *) poll_fail '当前构建标记不受支持，需要精确官方0.2.16或巡检v1/v2/poll/patch' ;;
+  "$poll_marker") poll_fail '当前已经运行此智商恢复版本，无需重复更新' ;;
+  "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch|0184257-intelligence-v2) poll_old_commit=$poll_commit ;;
+  *) poll_fail '当前构建标记不受支持，需要精确官方0.2.16或巡检v1/v2/poll/patch或智商检测v2' ;;
 esac
 poll_image=$(docker inspect --format '{{.Image}}' "$poll_container") || poll_fail '读取当前镜像失败'
 poll_validate_image
@@ -112,7 +112,7 @@ fi
   umask 077
   set -C
   {
-    printf '%s\n' intelligence-v2-previous-v1 "$poll_service" "$poll_project" "$poll_image" "$poll_old_commit"
+    printf '%s\n' intelligence-recovery-v1-previous-v1 "$poll_service" "$poll_project" "$poll_image" "$poll_old_commit"
     printf '%s\n' "$poll_original_files"
   } > "$poll_previous"
   poll_image_record_text > "$poll_previous_image"
@@ -150,6 +150,6 @@ poll_installed=$(poll_compose new version 2>&1) || poll_restore
 poll_version_fields "$poll_installed"
 [ "$poll_version" = 0.2.16 ] && [ "$poll_commit" = "$poll_marker" ] || poll_restore
 printf '\n更新完成：Sub2API 0.2.16，构建标记 %s。\n' "$poll_marker"
-printf '原程序与配置已保留；浏览器强制刷新后进入“智商检测”页面。\n'
+printf '原程序与配置已保留；浏览器强制刷新后进入“智商恢复”页面。\n'
 printf '后续操作：sh "%s/manage.sh" status "%s" "%s"\n' "$poll_bundle" "$poll_base" "$poll_service"
 printf '回滚操作：sh "%s/rollback.sh" "%s" "%s"\n' "$poll_bundle" "$poll_base" "$poll_service"

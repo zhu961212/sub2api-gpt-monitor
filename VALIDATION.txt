@@ -1,30 +1,36 @@
-Sub2API 0.2.16 intelligence check v2 patch; 2026-10-13, Asia/Shanghai.
+Sub2API 0.2.16 intelligence recovery v1; 2026-10-14, Asia/Shanghai.
 Official baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
-Version: 0.2.16; marker: 0184257-intelligence-v2. Linux amd64 and arm64 only.
+Version: 0.2.16; marker: 0184257-intelligence-recovery-v1. Linux amd64/arm64.
+Reference study: spumon1/SUCK_MY_ASTRA at ed3ee54e64cce0ece6759684fc8ca60fbeb9b7d3.
 
-Changes verified this round:
-- Account-management detection controls removed; all controls reside on the renamed intelligence-check page.
-- Accounts at 100% usage skip detection without changing scheduling.
-- Separate v2 package/Compose records preserve upgrades and rollback from the previous patch.
+Implementation verified:
+- Old answer/iPhone classifier, confirmation scheduling mutations, admin API, view, components and corresponding tests removed.
+- New single/bulk/automatic mint uses the account's own OAuth identity and active bound proxy; bounded attempts/deadline and early stream close.
+- Strict response.created model/id, Fernet structure/timestamps, complete same-response routing cookie pair, gateway and shortest declared expiry checks.
+- Ticket length is optional protocol matching; no model ability inference. Fresh turns never replay the mint turn-state.
+- Redis cache separates account/token/proxy/client identity. HTTP and all WS modes reuse valid routing cookies, preserving existing turn routing.
+- Cached routes survive failed refresh; expired/changed identity and cache failure cannot report ready. No raw secrets appear in public results.
+- Active lease/configuration checks and cancellation guards protect result/cache writes; automatic schedules use actual expiry and shared Redis plan.
+- Existing 100% valid quota windows skip minting; recovery never changes the scheduling switch.
+- Added quota regressions confirm exhausted 5h/week windows send no mint request and already-reset windows resume minting without toggling scheduling.
+- WS regressions preserve preferred connections after routing expiry/rotation, follow actual factory headers after reconnect, retain unrelated custom Cookie when recovery is absent and keep beta/device/thread compatibility guards.
 
 Backend passed:
-- go test ./internal/service -run 'GPTMonitor|GPTAccountMonitor' -count=1
-- go test ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTMonitor|GPTAccountMonitor|ProvideCleanup' -count=1
-- Quota regressions cover 5h/week exhaustion, elapsed absolute/relative resets, stale snapshots, pre-token rejection, post-refresh reread rejection, and automatic/bulk/single/followup skipped results.
-- gofmt and source git diff --check passed. No repository projections or schema changed.
+- go test ./internal/service ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTRecovery|GPTAccountRecovery|OpenAIRecovery|ProvideCleanup' -count=1
+- go test ./internal/service -run 'GPTRecovery|GPTAccountRecovery|TestOpenAIWSConnPool|TestNormalizeOpenAIWS|TestBuildOpenAIWSHeaders|Test.*CodexTurnState|TestForward_OAuth|TestBuildUpstreamRequest' -count=1 -timeout 120s
+- Full tests passed for internal/config, internal/repository, internal/handler/admin, internal/server/routes and cmd/server.
+- Windows full repository tests require Git usr/bin on PATH for the upstream pg_dump shell fixtures; the initial missing-sh run was rerun with that environment correction and passed.
+- gofmt, source git diff --check and go vet for the six changed backend packages passed. No schema/migration changes.
 
-Frontend passed: 83 tests in 7 related files, vue-tsc --noEmit, and related-file ESLint.
-- Account page/menu no longer query or trigger intelligence checks.
-- Central page supports single-account IDs outside saved scope, dedicated result polling, neutral skipped results, and editable settings during confirmation waits.
-- One Vite production build passed with stable source hashes and refreshed embedded dist.
-- Existing warnings concern Node shell-args deprecation, Browserslist data, mixed imports, and chunk size.
-- pnpm 9 frozen-lockfile installation kept package and lockfile unchanged.
+Frontend passed:
+- 102 tests in 11 related files (recovery view/API, router, sidebar, i18n, account menu).
+- node node_modules/vue-tsc/bin/vue-tsc.js --noEmit; modified-file ESLint.
+- Temporary and embedded Vite production builds passed; the release pipeline repeats embedded verification below.
+- package.json and pnpm-lock.yaml unchanged.
 
-Release build uses CGO_ENABLED=0, -tags embed, -trimpath and marker 0184257-intelligence-v2 for Linux amd64/arm64.
-Export/package scripts require exact-baseline patch application with tree equality, ELF64 architecture validation, TAR payload/permission validation, ZIP integrity with docs/legal, and SHA256 manifests; final artifacts are verified before publication.
-Installer checks passed this round:
-- Four shell scripts: sh -n and LF checks; build/export Python syntax; root git diff --check.
-- Six fake-Docker scenarios: previous-patch amd64 upgrade/status/logs/rollback/restart with old files preserved; official arm64 upgrade/status/logs/rollback/restart; wrong installed marker automatic restore; unknown marker rejection; current marker rejection; altered original configuration rollback rejection.
-- Executed on Windows Git Bash. The fixture emulated the ELF execute-bit predicate because NTFS/Git Bash cannot retain Unix ELF execute bits; all other installer checks ran unmodified. No Linux executable was launched.
+Delivery checks:
+- Deployment shell syntax checks and Python build/export syntax checks passed.
+- New independent package/Compose record names preserve upgrades and rollback from 0184257-intelligence-v2 as well as earlier supported builds.
+- build_release.py --build-frontend verifies locale key completeness, type checking, embedded Vite output, Linux ELF64 amd64/arm64 headers, exact-base patch application and tree equality, TAR payload/permissions, ZIP integrity and SHA256 manifests. It stops without replacing final assets on a failed build or package validation.
 
-No real OAuth/upstream account, user proxy, PostgreSQL database, Docker daemon or user server has been contacted this round.
+No real OAuth/upstream account, user proxy, PostgreSQL database, Docker daemon or user server was contacted. Local protocol/transport/Redis/database fixture tests cannot guarantee that a particular real upstream/proxy will mint acceptable tickets or improve model capability.

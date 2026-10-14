@@ -1,49 +1,47 @@
-# Sub2API 0.2.16 智商检测与账号调度补丁
+# Sub2API 0.2.16 智商恢复补丁
 
-在官方 Sub2API 后台集中提供智商检测、定时检测和账号调度。只发布 Linux amd64、arm64，安装时自动选择架构。
+后台增加“智商恢复”，通过账号绑定代理获取 Codex 路由票据，让正常 OAuth 请求复用有效路由 Cookie。旧问答检测、iPhone 代数规则、复测确认和自动开关调度已删除。
 
-- 所有检测入口集中在“智商检测”页（原“GPT 账号巡检”），账号管理页已移除检测入口。
-- 使用额度达到 100% 时自动跳过，不发起检测请求，不改变调度；额度恢复后可再次检测。
-- 自动巡检按到期时间逐个执行，检测结束后间隔 5 秒。
-- 需要改变调度时，约 5 分钟后复测；两次有效结果一致才关闭或恢复。
-- 使用账号绑定代理；含糊回答、网络、认证或代理失败时保持原调度。
+- 单号恢复可使用保存范围外账号；关闭定时恢复后仍可手动恢复。
+- 支持批量和定时续取、账号范围、目标网关、超时及有限尝试次数。
+- 校验 response.created 模型声明、Fernet 时间及路由 Cookie 有效期。
+- 按账号、OAuth 身份、代理及客户端身份隔离，票据存入带期限的 Redis 缓存。
+- 新对话只复用 __cflb / __oailb，不注入探针 turn-state；已有对话维持自己的路由。
+- 页面不返回原始票据、Token、Cookie 和代理密码；取票不改变调度开关。
 
-检测固定使用 `gpt-6-astra / XHigh`，按后台配置的期望 iPhone 代数判定。
+“智商恢复”是用户指定的功能名称。票据及路由校验不保证实际模型身份、能力或回答质量。取票会发送小型 gpt-6-astra 请求，可能消耗额度；已有有效额度记录达到 100% 时跳过。
 
-## Linux 服务器更新
+## 开发与本地交付
 
-支持精确官方 0.2.16、对应巡检 v1/v2/poll，以及上一版 `0184257-gpt-monitor-patch`。进入原 Compose 部署目录执行：
+源码位于源码/sub2api-host-0.2.16，官方基线为 01842576b3d5c1e2545b5a99ad555d36e28ed306。运行 python make_patch.py 导出补丁，python build_release.py --build-frontend 构建含前端的 Linux amd64 / arm64 包及源码 ZIP。
+
+构建标记为 0184257-intelligence-recovery-v1，包目录为 intelligence-recovery-0.2.16-linux-v1。资产文件名保留 sub2api-0.2.16-gpt-monitor-linux.tar.gz 和 sub2api-gpt-monitor.patch。release/ 是本地产物；可在 [GitHub Release](https://github.com/zhu961212/sub2api-gpt-monitor/releases/tag/v0.2.16-intelligence-recovery-v1) 下载 Linux 安装包、源码 ZIP、补丁及校验文件。
+
+## Linux 安装与回滚
+
+进入原 Compose 部署目录（即现有 docker-compose.yml 所在目录），下载本次安装包及校验文件，再依次执行。使用固定版本链接，避免下载到其他版本：
 
 ```sh
 set -e
-release_url=https://github.com/zhu961212/sub2api-gpt-monitor/releases/download/v0.2.16-intelligence-check-v2
+release_url='https://github.com/zhu961212/sub2api-gpt-monitor/releases/download/v0.2.16-intelligence-recovery-v1'
 curl -fL "$release_url/sub2api-0.2.16-gpt-monitor-linux.tar.gz" -o sub2api-0.2.16-gpt-monitor-linux.tar.gz
-curl -fL "$release_url/SHA256SUMS.txt" -o intelligence-v2-SHA256SUMS.txt
-grep '  sub2api-0.2.16-gpt-monitor-linux.tar.gz$' intelligence-v2-SHA256SUMS.txt | sha256sum -c -
-test ! -e intelligence-check-0.2.16-linux-v2
+curl -fL "$release_url/SHA256SUMS.txt" -o SHA256SUMS.txt
+grep '  sub2api-0.2.16-gpt-monitor-linux.tar.gz$' SHA256SUMS.txt | sha256sum -c -
+test ! -e intelligence-recovery-0.2.16-linux-v1
 tar -xzf sub2api-0.2.16-gpt-monitor-linux.tar.gz
-sh intelligence-check-0.2.16-linux-v2/update.sh docker-compose.yml sub2api
+sh intelligence-recovery-0.2.16-linux-v1/update.sh docker-compose.yml sub2api
 ```
 
-Compose 文件或服务名不同，替换最后两个参数。新包使用独立目录和 `docker-compose.intelligence-v2.*` 记录，可直接升级上一版；保留旧包和旧覆盖文件，以便回滚。新包目录已存在时停止，另选独立解压位置并保留目录名称，不要覆盖挂载中的程序。
+包目录必须独立，已存在时请另选解压位置，不能覆盖挂载中的程序。修改最后两个参数适配 Compose 文件和服务名。支持精确官方 0.2.16、旧巡检 v1/v2/poll/patch 和上一版 0184257-intelligence-v2。
 
-检查、查看日志、启动和回滚：
+自动更新要求当前容器健康、底层镜像为精确官方 0.2.16，并能核对实际 Compose 配置链。使用自定义项目名时先设置原 COMPOSE_PROJECT_NAME。使用自定义 --env-file、已修改的 Compose 配置或其他不受支持部署方式时，脚本会在重建服务前停止，需要按原部署参数处理。
 
-```sh
-sh intelligence-check-0.2.16-linux-v2/manage.sh status docker-compose.yml sub2api
-sh intelligence-check-0.2.16-linux-v2/manage.sh logs docker-compose.yml sub2api
-sh intelligence-check-0.2.16-linux-v2/manage.sh start docker-compose.yml sub2api
-sh intelligence-check-0.2.16-linux-v2/rollback.sh docker-compose.yml sub2api
-```
+查看状态：sh intelligence-recovery-0.2.16-linux-v1/manage.sh status docker-compose.yml sub2api
 
-成功后版本标记为 `0184257-intelligence-v2`。浏览器强制刷新，进入“智商检测”保存规则并启用自动检测，也可在该页检测单个账号。
+回滚：sh intelligence-recovery-0.2.16-linux-v1/rollback.sh docker-compose.yml sub2api
 
-更新器保留原 Compose 配置链和旧程序，只重建应用服务，启动失败时恢复旧程序。复用原数据库、Redis、账号和规则，不新增数据库迁移。
+更新后强制刷新浏览器，进入“智商恢复”，选择账号并保存，然后提交单号或全部恢复。默认不限制票长、不指定某个网关。新版本使用独立 docker-compose.intelligence-recovery-v1.* 记录，保留升级前程序和配置链。
 
-## 开发与说明
+升级后保留新旧包目录及 docker-compose.intelligence-recovery-v1.* 记录。后续启动与查看日志分别使用本包 manage.sh start 和 manage.sh logs，参数仍为原 Compose 文件和服务名。
 
-[项目文档](PROJECT.md) 说明实现、目录和构建步骤。[源码补丁](sub2api-gpt-monitor.patch) 对应官方精确基线 `01842576b3d5c1e2545b5a99ad555d36e28ed306`。Release 提供完整源码 ZIP 和校验值。
-
-开发源码位于 `源码/sub2api-host-0.2.16`。`python make_patch.py` 导出补丁，`python build_release.py` 构建 Linux 包；修改前端后先安装依赖，再运行 `python build_release.py --build-frontend`。
-
-本轮验证记录见 [VALIDATION.txt](VALIDATION.txt)。
+[项目说明](PROJECT.md) 与 [验证记录](VALIDATION.txt) 提供实现和验收详情。

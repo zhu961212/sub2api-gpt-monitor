@@ -1,6 +1,6 @@
 #!/bin/sh
 # Shared guarded Compose operations for the 0.2.16 patch package.
-poll_marker=0184257-intelligence-v2
+poll_marker=0184257-intelligence-recovery-v1
 official_marker=01842576b3d5c1e2545b5a99ad555d36e28ed306
 poll_fail() { printf '操作失败：%s\n' "$*" >&2; exit 1; }
 poll_no_symlinks() {
@@ -24,11 +24,11 @@ poll_init() {
   [ "$(pwd -P)" = "$poll_dir" ] || poll_fail '请在原 Compose 文件所在目录执行'
   poll_base="$poll_dir/$(basename -- "$poll_base")"
   poll_bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-  [ "$(basename -- "$poll_bundle")" = intelligence-check-0.2.16-linux-v2 ] || poll_fail '请保留独立的 intelligence-check-0.2.16-linux-v2 包目录'
-  poll_overlay="$poll_dir/docker-compose.intelligence-v2.yml"
-  poll_previous="$poll_dir/docker-compose.intelligence-v2.previous.txt"
-  poll_previous_hashes="$poll_dir/docker-compose.intelligence-v2.previous.sha256"
-  poll_previous_image="$poll_dir/docker-compose.intelligence-v2.previous-image.yml"
+  [ "$(basename -- "$poll_bundle")" = intelligence-recovery-0.2.16-linux-v1 ] || poll_fail '请保留独立的 intelligence-recovery-0.2.16-linux-v1 包目录'
+  poll_overlay="$poll_dir/docker-compose.intelligence-recovery-v1.yml"
+  poll_previous="$poll_dir/docker-compose.intelligence-recovery-v1.previous.txt"
+  poll_previous_hashes="$poll_dir/docker-compose.intelligence-recovery-v1.previous.sha256"
+  poll_previous_image="$poll_dir/docker-compose.intelligence-recovery-v1.previous-image.yml"
   for poll_command in docker awk sed cut cmp sha256sum od tr wc; do
     command -v "$poll_command" >/dev/null 2>&1 || poll_fail "缺少 $poll_command"
   done
@@ -67,9 +67,9 @@ poll_load_previous() {
   IFS= read -r poll_project <&3 || poll_fail '原配置记录损坏'
   IFS= read -r poll_image <&3 || poll_fail '原配置记录损坏'
   IFS= read -r poll_old_commit <&3 || poll_fail '原配置记录损坏'
-  [ "$poll_format" = intelligence-v2-previous-v1 ] && [ "$poll_saved_service" = "$poll_service" ] || poll_fail '原配置记录与服务不匹配'
+  [ "$poll_format" = intelligence-recovery-v1-previous-v1 ] && [ "$poll_saved_service" = "$poll_service" ] || poll_fail '原配置记录与服务不匹配'
   case "$poll_project" in ''|*[!a-z0-9_-]*) poll_fail '原项目名无效' ;; esac
-  case "$poll_old_commit" in "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch) ;; *) poll_fail '原版本记录不受支持' ;; esac
+  case "$poll_old_commit" in "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch|0184257-intelligence-v2) ;; *) poll_fail '原版本记录不受支持' ;; esac
   poll_validate_image
   poll_count=0
   poll_first=''

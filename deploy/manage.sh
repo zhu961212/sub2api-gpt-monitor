@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manage intelligence v2 using the project and configuration chain saved by updater.
+# Manage intelligence recovery v1 using the project and configuration chain saved by updater.
 set -eu
 set -f
 . "$(dirname -- "$0")/common.sh"
@@ -30,6 +30,6 @@ case "$poll_requested_action" in
     poll_status=$(poll_compose new version 2>&1) || poll_fail '读取应用版本失败'
     printf '%s\n' "$poll_status"
     poll_version_fields "$poll_status"
-    [ "$poll_version" = 0.2.16 ] && [ "$poll_commit" = "$poll_marker" ] || poll_fail '当前程序尚未运行此智商检测补丁版本；若刚回滚，这是原程序状态'
+    [ "$poll_version" = 0.2.16 ] && [ "$poll_commit" = "$poll_marker" ] || poll_fail '当前程序尚未运行此智商恢复补丁版本；若刚回滚，这是原程序状态'
     ;;
 esac

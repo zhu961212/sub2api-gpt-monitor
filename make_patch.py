@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""导出并验证官方 0.2.16 的智商检测调度源码补丁。仅使用 Python 标准库。"""
+"""导出并验证官方 0.2.16 的智商恢复取票源码补丁。仅使用 Python 标准库。"""
 
 import hashlib
 import os
