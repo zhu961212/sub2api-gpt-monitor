@@ -15,7 +15,7 @@ import zipfile
 
 from make_patch import BASE, ROOT, SOURCE
 
-NAME = "intelligence-recovery-0.2.16-linux-v1"
+NAME = "intelligence-recovery-0.2.16-linux-v2"
 DIST = SOURCE / "backend/internal/web/dist"
 SCRIPTS = ("update.sh", "rollback.sh", "manage.sh", "common.sh")
 ROOT_FILES = ("Dockerfile", "Dockerfile.goreleaser", "Makefile", "LICENSE",
@@ -98,7 +98,7 @@ def main():
             binary.parent.mkdir(parents=True)
             env = dict(os.environ, CGO_ENABLED="0", GOOS="linux", GOARCH=arch)
             run(["go", "build", "-tags", "embed", "-trimpath", "-ldflags",
-                 "-s -w -X main.Version=0.2.16 -X main.Commit=0184257-intelligence-recovery-v1 -X main.BuildType=release",
+                 "-s -w -X main.Version=0.2.16 -X main.Commit=0184257-intelligence-recovery-v2 -X main.BuildType=release",
                  "-o", binary, "./cmd/server"], cwd=SOURCE / "backend", env=env)
             with binary.open("rb") as handle:
                 header = handle.read(20)

@@ -1,31 +1,45 @@
-# 智商恢复实现说明
+# 智商恢复 v2 实现说明
 
-基于官方 Sub2API 0.2.16（01842576b3d5c1e2545b5a99ad555d36e28ed306），参考用户指定的 spumon1/SUCK_MY_ASTRA 有限取票、模型声明校验及路由 Cookie 复用逻辑，在宿主 Go 服务内实现。无需插件、云函数、额外容器或数据库迁移。
+基于官方 Sub2API 0.2.16（01842576b3d5c1e2545b5a99ad555d36e28ed306），对照用户提供 SUCK_MY_ASTRA 本地源码的有限取票、路由 Cookie、动态出口粘性和 WS metadata 实现。无需插件、云函数或数据库迁移。
 
-## 恢复流程
+## 动态住宅会话
 
-/admin/gpt-account-recovery 替代旧 /admin/gpt-account-monitor。支持账号范围、间隔、超时、尝试上限、网关、票长、有效期、手动单号及批量恢复。自动恢复通过 Redis 租约和共享计划协调多实例；写操作保留管理员认证及 Step-up。
+新增 proxy_session_mode（none/kookeey/username_sid/template）、proxy_session_ttl_seconds、transport。基础代理从 GPT_ACCOUNT_RECOVERY_PROXY_URL 读取，未覆盖时用账号代理。前端只显示配置状态，API 不接受完整代理 URL 或只读状态。
 
-使用账号自己的 OAuth 凭据和有效绑定代理，复用令牌刷新、上游传输及 TLS 配置，向 Codex Responses 发送小型 ping 流式请求。次数和总时限均有边界；认证或权限失败结束，错误只返回脱敏分类。读取合法 response.created 后关闭响应，不等待完整答案。
+Kookeey 在密码国家/地区字段后加 8 位 session，不加自动轮换间隔；用户名模式替换 -sid- 字段；模板只允许认证部分含 {session}。无种子重试换新 session，种子沿用旧会话和截止时间。Redis 只新增 session/mode/deadline，不重复保存代理密码。
 
-要求声明模型为 gpt-6-astra、response.id 存在、票据符合 Fernet 结构且未过期、Cookie 配对完整有效及网关匹配。默认 gateway=any、ticket_length=0，避免依赖固定 780 长度或某个网关的未经证实能力判断。JWT 过期时间只是上游声明，本地解析不构成签名验证。
+缓存身份摘要隔离账号、Token、ChatGPT 身份、账号及专用代理、客户端身份、模式/租约与取票通道。身份变化不复用旧路由。票与 Cookie 有效期受会话租约上限约束，种子续取不延长旧租约。
 
-## 正常请求接入与旧功能删除
+## 取票与业务连接
 
-Redis 缓存键隔离账号 ID、Token、ChatGPT 身份、代理、客户端身份及头覆盖配置。业务命中有效票据时仅带 __cflb / __oailb，不混入登录 Cookie。探针 turn-state 只用于观测，不能跨对话注入；真实回合使用自己的状态和配对路由，WebSocket 连接复用核对 Cookie 摘要。
+取票用账号自己的 OAuth 身份，有总时限、尝试数、大小及事件数限制，认证/权限失败停止。SSE 要求完整 response.created 的 id/model；WS 从 101 或 codex.response.metadata 取票，要求完整 response.created 或 metadata.response 的 id/model。两者校验固定模型、Fernet 结构/时间、完整 Cookie pair、网关和最短有效期。
 
-配置保存在 gpt_account_recovery_config，公开结果位于 extra.gpt_account_recovery，只有时间、状态、网关、长度和脱敏错误。原始票据仅在有期限的 Redis 缓存中。账号凭据或代理变化后旧缓存不会复用。已有有效额度达到 100% 时跳过；取票成功或失败不改变调度。
+新对话只复用 __cflb/__oailb，不注入探针 turn-state。HTTP 实际代理由同一票据重建。WS RouteFactory 在连接选择和拨号前同步 Cookie 与代理，兼容键包含 Cookie 和实际代理摘要，同 Cookie 不同 session 不误复用；preferred 续链保持原物理连接。
 
-旧问答、iPhone 代数分类器、确认窗口、二次复测、检测接口、组件和对应测试已删除。旧配置不自动启用恢复；新结果写入时移除该账号旧 gpt_account_monitor 结果。旧版本已关闭的调度开关保留实际状态，管理员可按需要调整。
+真实 turn-state 与实际 Cookie/session 单独映射。observer 在拨号前用最终路由建私有快照，避免并发取票错绑；业务 metadata 的真实 state 同样记录续链路由，完整状态与凭据不记公开日志。
 
-## 核心文件及构建
+## 管理与约束
 
-gpt_account_recovery_service.go 管理任务和配置；mint.go 取票及协议解析；identity.go / transport.go 处理凭据及代理；openai_recovery_routing.go 接入正常 HTTP/WS；repository recovery 文件负责公开结果和 Redis 缓存。前端 GPTAccountRecoveryView.vue 与 gptAccountRecovery.ts 提供集中恢复入口。
+/admin/gpt-account-recovery 支持单号、范围批量、定时、取消过时任务、Redis 租约及共享计划。单号可在范围外，停定时仍可手动。旧问答/iPhone 分类器和自动调度开关逻辑继续保持删除。
 
-python make_patch.py 使用临时 Git index 验证补丁应用于官方精确基线后得到一致源码树，不改变真实 index。python build_release.py --build-frontend 构建 Linux amd64 / arm64 并内嵌界面，标记 0184257-intelligence-recovery-v1。校验 ELF、TAR 内容和权限、源码 ZIP 完整性及 SHA256。
+专用代理用于恢复和命中路由的业务连接，令牌刷新沿原账号策略。独立恢复上下文保护刷新失败不关闭调度，有效额度 100% 时跳过。结果只含脱敏状态、时间、网关、长度及错误分类，保留管理员认证和 Step-up。
 
-本地产物在 release/。源码、工具和产物按现有规则不进入外层 Git；外层保存完整补丁、脚本、文档及校验值。独立安装目录和 Compose 记录支持上一版升级与回滚。
+传输调试日志中的代理地址、缓存键和底层错误使用短摘要，避免密码随错误泄漏。
+
+## 可选跨账号路由候选
+
+share_route_cookies 默认关闭；share_route_donor_account_ids 可指定供体。共享池只含 Cookie pair、网关、到期时间、代理配置摘要和兼容时可复用的 session，不包含 OAuth、账号标识或 turn-state。候选池有数量/TTL/体积限制，来源配置变化隔离旧池。
+
+候选只用于取票种子，不能直接当接收账号的业务票据。接收者以自己的 OAuth、身份头和代理发一次有限验证；成功后只保存自己的票和 identity 缓存。不同代理配置丢弃供体 session，仅借 Cookie。验证失败计入原预算，后续可自身裸取票，不改供体或调度。业务 HTTP/WS 仍按账号及真实 turn 隔离。
+
+2026-10-15 有限线上对照共 4 次（A1/B3），使用用户导出文件各自代理。B 借 A 路由 Cookie 可完成响应；B 裸请求与自身路由也都成功，全部模型声明一致。该结果没有证明回答能力恢复，也不把 Cookie 未重发当作实际网关身份的独立证明。
+
+## 构建与交付
+
+标记 0184257-intelligence-recovery-v2，目录 intelligence-recovery-0.2.16-linux-v2，资产名保持兼容。独立 v2 Compose 记录支持 v1 及全部原支持版本升级/回滚。GPT_RECOVERY_ENV_FILE 通过 raw env_file 注入私密值，需 Compose >=2.30，只记录路径和摘要，原链可独立回滚。
+
+make_patch.py 用临时 Git index 验证精确基线应用后的源码树。build_release.py --build-frontend 验证前端、Linux双架构 ELF、TAR 内容权限、源码 ZIP 和 SHA256。源码 HEAD 保持官方基线，外层 Git 提交补丁、脚本、说明和校验。
 
 ## 证据边界
 
-“智商恢复”是后台操作名称。票长、Fernet 结构、网关或模型声明均不能独立证明实际模型身份或能力。不移植按状态长度判断能力、跨回合注票或跨账号全局共享路由。真实代理能否获得合格票据取决于上游；本地测试以可控响应验证协议、隔离及失败处理。
+“智商恢复”是功能名称。票长、声明、state-echo、网关与出口不能证明实际模型能力。本地测试验证协议、隔离及续链，供应商会话也不能保证物理 IP 永远不变。线上账号取票成功率及回答能力未由本地测试证明。

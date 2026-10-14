@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manage intelligence recovery v1 using the project and configuration chain saved by updater.
+# Manage intelligence recovery v2 using the project and configuration chain saved by updater.
 set -eu
 set -f
 . "$(dirname -- "$0")/common.sh"

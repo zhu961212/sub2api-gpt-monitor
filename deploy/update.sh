@@ -1,10 +1,11 @@
 #!/bin/sh
-# Update official 0.2.16 or monitor v1/v2/poll/patch without overwriting mounted programs.
+# Update official 0.2.16 or supported previous patches without overwriting mounted programs.
 set -eu
 set -f
 . "$(dirname -- "$0")/common.sh"
 case "$#" in 0) set -- docker-compose.yml sub2api ;; 1) set -- "$1" sub2api ;; 2) ;; *) poll_fail '用法：sh update.sh [docker-compose.yml] [sub2api]' ;; esac
 poll_init "$1" "$2"
+poll_prepare_recovery_env
 for poll_path in "$poll_overlay" "$poll_previous" "$poll_previous_hashes" "$poll_previous_image"; do
   [ ! -e "$poll_path" ] && [ ! -L "$poll_path" ] || poll_fail '新版覆盖文件或更新记录已存在，不会覆盖；请先查看当前版本'
 done
@@ -38,8 +39,8 @@ poll_version_fields "$poll_current"
 [ "$poll_version" = 0.2.16 ] || poll_fail '仅支持当前运行版本 0.2.16'
 case "$poll_commit" in
   "$poll_marker") poll_fail '当前已经运行此智商恢复版本，无需重复更新' ;;
-  "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch|0184257-intelligence-v2) poll_old_commit=$poll_commit ;;
-  *) poll_fail '当前构建标记不受支持，需要精确官方0.2.16或巡检v1/v2/poll/patch或智商检测v2' ;;
+  "$official_marker"|0184257-gpt-monitor|0184257-gpt-monitor-v2|0184257-gpt-monitor-poll|0184257-gpt-monitor-patch|0184257-intelligence-v2|0184257-intelligence-recovery-v1) poll_old_commit=$poll_commit ;;
+  *) poll_fail '当前构建标记不受支持，需要精确官方0.2.16、巡检v1/v2/poll/patch、智商检测v2或智商恢复v1' ;;
 esac
 poll_image=$(docker inspect --format '{{.Image}}' "$poll_container") || poll_fail '读取当前镜像失败'
 poll_validate_image
@@ -112,7 +113,7 @@ fi
   umask 077
   set -C
   {
-    printf '%s\n' intelligence-recovery-v1-previous-v1 "$poll_service" "$poll_project" "$poll_image" "$poll_old_commit"
+    printf '%s\n' intelligence-recovery-v2-previous-v1 "$poll_service" "$poll_project" "$poll_image" "$poll_old_commit" "$poll_recovery_env_file" "$poll_recovery_env_sha256"
     printf '%s\n' "$poll_original_files"
   } > "$poll_previous"
   poll_image_record_text > "$poll_previous_image"

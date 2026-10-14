@@ -1,2 +1,3 @@
 * text=auto eol=lf
-*.patch -text
+# Patch context preserves upstream indentation, including its leading space.
+*.patch -text -whitespace

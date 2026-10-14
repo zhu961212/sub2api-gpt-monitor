@@ -1,36 +1,70 @@
-Sub2API 0.2.16 intelligence recovery v1; 2026-10-14, Asia/Shanghai.
+Sub2API 0.2.16 intelligence recovery v2; 2026-10-15, Asia/Shanghai.
 Official baseline: 01842576b3d5c1e2545b5a99ad555d36e28ed306.
-Version: 0.2.16; marker: 0184257-intelligence-recovery-v1. Linux amd64/arm64.
-Reference study: spumon1/SUCK_MY_ASTRA at ed3ee54e64cce0ece6759684fc8ca60fbeb9b7d3.
+Version: 0.2.16; marker: 0184257-intelligence-recovery-v2. Linux amd64/arm64.
+Reference: user-supplied local SUCK_MY_ASTRA project; documentation is reference material, not execution authorization.
 
-Implementation verified:
-- Old answer/iPhone classifier, confirmation scheduling mutations, admin API, view, components and corresponding tests removed.
-- New single/bulk/automatic mint uses the account's own OAuth identity and active bound proxy; bounded attempts/deadline and early stream close.
-- Strict response.created model/id, Fernet structure/timestamps, complete same-response routing cookie pair, gateway and shortest declared expiry checks.
-- Ticket length is optional protocol matching; no model ability inference. Fresh turns never replay the mint turn-state.
-- Redis cache separates account/token/proxy/client identity. HTTP and all WS modes reuse valid routing cookies, preserving existing turn routing.
-- Cached routes survive failed refresh; expired/changed identity and cache failure cannot report ready. No raw secrets appear in public results.
-- Active lease/configuration checks and cancellation guards protect result/cache writes; automatic schedules use actual expiry and shared Redis plan.
-- Existing 100% valid quota windows skip minting; recovery never changes the scheduling switch.
-- Added quota regressions confirm exhausted 5h/week windows send no mint request and already-reset windows resume minting without toggling scheduling.
-- WS regressions preserve preferred connections after routing expiry/rotation, follow actual factory headers after reconnect, retain unrelated custom Cookie when recovery is absent and keep beta/device/thread compatibility guards.
+Implemented and checked:
+- Private server proxy override; Kookeey eight-character password session, username SID and authentication-only template.
+- Failed mint retries rotate session; accepted routes retain the exact successful session and original lease deadline.
+- SSE and bounded native WS mint; complete model/id declarations, metadata ticket support, cookie pair and shortest expiry validation.
+- HTTP and all WS forwarding modes use the selected route's proxy. Fresh business turns never inject a probe turn-state.
+- WS pool compatibility includes proxy digest; actual dial observer snapshots prevent same-cookie/different-session races.
+- Real business WS metadata records turn routing for reconnects without moving ongoing preferred physical connections.
+- Independent recovery token context protects scheduling even without an account-bound proxy; refresh policy is preserved.
+- Debug proxy/cache/error diagnostics use hashes; no raw proxy password in public results or transport debug logs.
+- Existing manual/scheduled/quota/config-revision/Redis-lease/admin Step-up protections retained. No database migration.
+- New independent v2 deployment records; recovery-v1 and prior supported builds upgrade/rollback.
+- Optional GPT_RECOVERY_ENV_FILE uses Compose >=2.30 raw env_file; only path and digest persist. Missing new env does not prevent rollback.
 
-Backend passed:
-- go test ./internal/service ./internal/config ./internal/repository ./internal/handler/admin ./internal/server/routes ./cmd/server -run 'GPTRecovery|GPTAccountRecovery|OpenAIRecovery|ProvideCleanup' -count=1
-- go test ./internal/service -run 'GPTRecovery|GPTAccountRecovery|TestOpenAIWSConnPool|TestNormalizeOpenAIWS|TestBuildOpenAIWSHeaders|Test.*CodexTurnState|TestForward_OAuth|TestBuildUpstreamRequest' -count=1 -timeout 120s
-- Full tests passed for internal/config, internal/repository, internal/handler/admin, internal/server/routes and cmd/server.
-- Windows full repository tests require Git usr/bin on PATH for the upstream pg_dump shell fixtures; the initial missing-sh run was rerun with that environment correction and passed.
-- gofmt, source git diff --check and go vet for the six changed backend packages passed. No schema/migration changes.
+Backend verification:
+- Recovery/config/admin/repository/routes/wiring targeted tests passed.
+- Recovery plus HTTP routing, WS pooling, identity/turn-state, normal forwarding and token protection regressions passed.
+- Unit-tagged recovery and expired-token/no-refresh-token protection regressions passed.
+- Full internal/service suite passed before shared-candidate additions (148.242s); full config/admin handler/routes/server suites passed. Final targeted verification covers the combined shared-candidate implementation.
+- Repository suite passed with the upstream Windows timing test excluded; that unchanged timing test then passed in isolation (3.336s).
+- go vet for internal/service, internal/config, internal/repository, internal/handler/admin, internal/server/routes and cmd/server passed.
+- gofmt and git diff --check passed. Frontend dependency manifest and lock remain unchanged.
 
-Frontend passed:
-- 102 tests in 11 related files (recovery view/API, router, sidebar, i18n, account menu).
-- node node_modules/vue-tsc/bin/vue-tsc.js --noEmit; modified-file ESLint.
-- Temporary and embedded Vite production builds passed; the release pipeline repeats embedded verification below.
-- package.json and pnpm-lock.yaml unchanged.
+Frontend verification:
+- Recovery view/API and locale completeness: 20 tests passed, including shared-route toggle and independent donor selection.
+- TypeScript noEmit and changed-file ESLint passed.
+- Release pipeline repeats locale/type checks and builds embedded Vite assets.
 
-Delivery checks:
-- Deployment shell syntax checks and Python build/export syntax checks passed.
-- New independent package/Compose record names preserve upgrades and rollback from 0184257-intelligence-v2 as well as earlier supported builds.
-- build_release.py --build-frontend verifies locale key completeness, type checking, embedded Vite output, Linux ELF64 amd64/arm64 headers, exact-base patch application and tree equality, TAR payload/permissions, ZIP integrity and SHA256 manifests. It stops without replacing final assets on a failed build or package validation.
+Deployment fixtures passed:
+- recovery-v1 -> v2, private raw env with special path characters, no credential output, env change blocks start.
+- Missing new env still permits original-chain rollback, failed update automatic rollback, old Compose rejection before mutation.
+- Shell syntax and Python export/build scripts checked.
 
-No real OAuth/upstream account, user proxy, PostgreSQL database, Docker daemon or user server was contacted. Local protocol/transport/Redis/database fixture tests cannot guarantee that a particular real upstream/proxy will mint acceptable tickets or improve model capability.
+Environment limits:
+- The unchanged upstream TestServerTimingConnectorRecordsDriverCallsWithoutRowLifetime failed in two broad runs on Windows timing assumptions, then passed in isolation (app ~31-34ms versus driver ~36-45ms). No timing implementation/test changes were made to hide it.
+- No PostgreSQL deployment, Docker daemon or production server was used. After the user supplied account exports and explicitly authorized a bounded comparison, exactly four live Codex requests were made (donor A: 1; receiver B: 3), with each account using its own exported bound SOCKS5 proxy. OAuth/account files and scheduling were not modified.
+- User-authorized proxy-only check: three HTTPS IP echo requests using Windows system certificate verification; same Kookeey session retained an exit and a new session changed exit. Raw IP and credentials were not printed. Initial Python HTTPS check failed its certificate store; certificate verification was never disabled.
+- Proxy connectivity and protocol fixtures do not establish real-account mint success, actual model identity or intelligence improvement.
+
+Packaging checks performed by build_release.py --build-frontend:
+- Exact-base patch application and source-tree equality, frontend checks/build, Linux amd64/arm64 ELF64 headers.
+- TAR payload and executable permissions, complete source ZIP integrity and SHA256 manifests.
+- Before GitHub publication, all assets are scanned for the exact private proxy credentials; uploaded sizes/digests and release tag commit are verified.
+Live Cookie comparison (2026-10-15):
+- A bare: HTTP 200, complete response, declared gpt-6-astra, 780-character state, issued pair labelled unified-148.
+- B bare: HTTP 200, complete response, same model/state length, issued pair labelled unified-40.
+- B using A Cookie on B proxy: HTTP 200, complete response, no new load-balancer pair; B using its own pair: same outcome.
+- No cross-account turn-state or donor OAuth was sent. Outputs were the same small OK response; model ability was not evaluated.
+- Compatible requests and absence of reissued Cookie do not independently prove the actual serving gateway or intelligence restoration.
+
+Shared-route implementation checks:
+- Default-off sharing and explicit donor IDs; shared Redis entries contain only Cookie route data and compatible proxy sessions, never donor OAuth/turn-state/account identity.
+- B uses its own credentials and bound proxy to validate a shared candidate; only its own resulting ticket enters its identity cache. Invalid seed falls back only within the original budget.
+- Shared Redis pool is scope-isolated, limited to eight expiring candidates and bounded payload; own account cache survives optional pool failure.
+- Donor whitelist, mode/config/scope isolation, cross-proxy sessions, expiry, no probe-state replay, handler and UI regressions passed.
+
+User-requested follow-up question:
+- B used its own exported proxy and donor Cookie for a no-tools question about the latest Apple phone it knew.
+- Successful captured response declared gpt-6-astra and answered iPhone 15 series, explicitly claiming knowledge through June 2024.
+- Initial follow-up output decoding failed because Windows GBK could not decode UTF-8 Chinese; the request had already reached upstream. It was repeated once after fixing UTF-8 decoding, with a fresh donor pair. This repeat is recorded, not hidden in the original four-request comparison budget.
+- No browsing tool was provided to the model. This answer does not show capability restoration.
+
+Final shared-candidate regressions:
+- Specified donor account never borrows; a receiver prioritizes specified donor candidates even when an old own seed exists. Empty candidate pool retains the own path.
+- A lease lost during own-ticket SaveTicket prevents shared publication and ready result; stored own cache is retained.
+- One combined parallel test build ran out of C-drive temporary space; task Go temporary output was moved to E-drive and affected repository/admin checks were rerun.
